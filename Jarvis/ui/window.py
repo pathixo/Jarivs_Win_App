@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from Jarvis.ui.terminal import Terminal
@@ -24,9 +24,36 @@ class MainWindow(QMainWindow):
 
         # Top Section: Thinking Orb & Status
         top_layout = QHBoxLayout()
+        
+        # Mic Button
+        self.mic_button = QPushButton("🎤")
+        self.mic_button.setFixedSize(50, 50)
+        self.mic_button.setStyleSheet("""
+            QPushButton {
+                background-color: #333333;
+                border-radius: 25px;
+                font-size: 24px;
+                border: 2px solid #00FFFF;
+            }
+            QPushButton:hover {
+                background-color: #444444;
+            }
+            QPushButton:pressed {
+                background-color: #00FFFF;
+                color: black;
+            }
+        """)
+        top_layout.addWidget(self.mic_button, alignment=Qt.AlignmentFlag.AlignRight)
+
         self.visuals = ThinkingOrb()
         self.visuals.setFixedSize(150, 150)
         top_layout.addWidget(self.visuals, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        # Spacer to balance layout if needed, or just keep orb centered
+        # For now, let's just add a dummy spacer or widget to balance the Mic button if we want Orb perfectly centered
+        # Simple QHBoxLayout puts widgets next to each other. 
+        # To center Orb, we might need: [Stretch] [Mic] [Orb] [Stretch] or similar.
+        # Let's keep it simple: Mic on left or right of Orb.
         
         main_layout.addLayout(top_layout)
 

@@ -17,6 +17,7 @@ try:
     from Jarvis.input.listener import Listener
     from Jarvis.input.audio_capture import AudioCapture
     from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+    import numpy
     print("Imports success!")
 except ImportError as e:
     print(f"Import Error: {e}")
