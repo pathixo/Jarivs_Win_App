@@ -38,6 +38,9 @@ def main():
         threading.Thread(target=process).start()
 
     window.terminal.command_signal.connect(on_command_input)
+    
+    # Connect TTS signal to UI Audio Player
+    tts.audio_generated.connect(window.play_audio)
 
     # Initialize Voice Listener (Optional)
     def on_wake_word():
