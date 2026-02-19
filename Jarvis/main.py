@@ -42,12 +42,18 @@ def main():
     # Connect TTS signal to UI Audio Player
     tts.audio_generated.connect(window.play_audio)
 
-    # Initialize Voice Listener (Optional)
-    def on_wake_word():
-        window.append_terminal_output("Wake Word Detected! Listening...")
-        tts.speak("Yes?")
-
-    listener = Listener(on_wake_word=on_wake_word)
+    # Connect Voice Listener signals
+    listener = Listener()
+    
+    # Update UI based on listener state
+    listener.state_changed.connect(window.visuals.set_color)
+    
+    # Process voice commands
+    listener.command_received.connect(on_command_input)
+    
+    # Connect manual trigger (Mic Button)
+    window.mic_button.clicked.connect(listener.start_listening)
+    
     listener.start()
 
     sys.exit(app.exec())
