@@ -4470,3 +4470,9 @@ Traceback (most recent call last):
     _torch_pytree.register_pytree_node(
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 AttributeError: module 'torch.utils._pytree' has no attribute 'register_pytree_node'
+2026-02-20 13:00:21,880 - ERROR - Main Loop Crash
+Traceback (most recent call last):
+  File "D:\Coding\Projects\Antigravity\Jarvis\main.py", line 60, in main
+    worker.execute_ready.connect(window.terminal.execute_and_display, Qt.ConnectionType.QueuedConnection)
+                                 ^^^^^^^^^^^^^^^
+AttributeError: 'MainWindow' object has no attribute 'terminal'
