@@ -4482,3 +4482,14 @@ Traceback (most recent call last):
     listener.state_changed.connect(window.orb.set_state, Qt.ConnectionType.QueuedConnection)
                                    ^^^^^^^^^^^^^^^^^^^^
 AttributeError: 'ThinkingOrb' object has no attribute 'set_state'
+2026-02-20 13:16:02,779 - ERROR - Main Loop Crash
+Traceback (most recent call last):
+  File "D:\Coding\Projects\Antigravity\Jarvis\main.py", line 62, in main
+    tray = JarvisTrayIcon()
+           ^^^^^^^^^^^^^^^^
+  File "D:\Coding\Projects\Antigravity\Jarvis\ui\tray.py", line 20, in __init__
+    self.update_icon("idle")
+  File "D:\Coding\Projects\Antigravity\Jarvis\ui\tray.py", line 91, in update_icon
+    self.action_listen.setText("Pause Listening")
+    ^^^^^^^^^^^^^^^^^^
+AttributeError: 'JarvisTrayIcon' object has no attribute 'action_listen'

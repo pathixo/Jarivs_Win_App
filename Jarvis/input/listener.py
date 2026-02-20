@@ -32,6 +32,7 @@ class Listener(QObject):
     def __init__(self):
         super().__init__()
         self.listening = False
+        self.manual_pause = False
         self.model = None
         self.model_lock = threading.Lock()
         self._is_processing = False
@@ -49,6 +50,18 @@ class Listener(QObject):
 
     def set_processing(self, is_processing):
         self._is_processing = is_processing
+        # Only emit state if not manually paused
+        if not self.manual_pause:
+             self.state_changed.emit("processing" if is_processing else "waiting")
+
+    def toggle_pause(self):
+        """Manual toggle for user pause command."""
+        self.manual_pause = not self.manual_pause
+        if self.manual_pause:
+            self.state_changed.emit("paused")
+        else:
+            self.state_changed.emit("waiting")
+        return self.manual_pause
 
     def _open_stream(self):
         """Open the microphone stream."""
@@ -102,7 +115,7 @@ class Listener(QObject):
 
             while self.listening:
                 try:
-                    if self._is_processing:
+                    if self._is_processing or self.manual_pause:
                         time.sleep(0.1)
                         continue
 
