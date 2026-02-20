@@ -25,11 +25,14 @@ class TTS(QObject):
             print(f"TTS Error: {e}")
 
     async def _speak_async(self, text):
-        communicate = edge_tts.Communicate(text, TTS_VOICE)
-        # Unique filename to avoid conflict/locking? Or just overwrite 'temp_tts.mp3'
+        # Truncate long responses for TTS (speak only first ~200 chars)
+        if len(text) > 250:
+            text = text[:250] + "..."
+        
+        # Use +15% speed for snappier delivery
+        communicate = edge_tts.Communicate(text, TTS_VOICE, rate="+15%")
         output_file = os.path.abspath("temp_tts.mp3")
         await communicate.save(output_file)
         
-        # Emit signal instead of playing directly
         self.audio_generated.emit(output_file)
-        print(f"Audio generated at {output_file}")
+

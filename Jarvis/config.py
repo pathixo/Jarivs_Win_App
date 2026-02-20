@@ -16,8 +16,8 @@ PORCUPINE_MODEL_PATH = os.getenv("PORCUPINE_MODEL_PATH", "")
 # Default Wake Word (Requires Porcupine model path)
 WAKE_WORD = "jarvis"
 
-# TTS Voice (Microsoft Edge TTS)
-TTS_VOICE = "en-US-JennyNeural"
+# TTS Voice (Microsoft Edge TTS) - GuyNeural is deeper and smoother
+TTS_VOICE = "en-US-GuyNeural"
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
