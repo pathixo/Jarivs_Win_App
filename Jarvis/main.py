@@ -57,10 +57,9 @@ def main():
 
         # Thread-safe UI connections
         worker.output_ready.connect(window.append_terminal_output, Qt.ConnectionType.QueuedConnection)
-        worker.execute_ready.connect(window.terminal.execute_and_display, Qt.ConnectionType.QueuedConnection)
-
+        
         # Listener signals -> UI (crash-safe)
-        listener.state_changed.connect(window.visuals.set_color, Qt.ConnectionType.QueuedConnection)
+        listener.state_changed.connect(window.orb.set_state, Qt.ConnectionType.QueuedConnection)
         listener.state_changed.connect(window.update_status, Qt.ConnectionType.QueuedConnection)
 
         # Pause listener while TTS is speaking so it doesn't hear itself
@@ -95,8 +94,8 @@ def main():
 
             threading.Thread(target=process, daemon=True).start()
 
-        # Connect terminal commands
-        window.terminal.command_signal.connect(on_command_input)
+        # Connect voice commands (no visual terminal input anymore)
+        listener.command_received.connect(on_command_input, Qt.ConnectionType.QueuedConnection)
 
         # Connect voice commands
         listener.command_received.connect(on_command_input, Qt.ConnectionType.QueuedConnection)

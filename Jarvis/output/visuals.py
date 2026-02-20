@@ -36,7 +36,7 @@ class ThinkingOrb(QWidget):
         self.timer.timeout.connect(self._tick)
         self.timer.start(16)
 
-    def set_color(self, state_name):
+    def set_state(self, state_name):
         """Thread-safe state change (called via signal)."""
         self.state = state_name
         if state_name == "listening":
