@@ -132,3 +132,12 @@ class MainWindow(QMainWindow):
     def append_terminal_output(self, text, type="info"):
         """Legacy method for compatibility - logs to console instead."""
         print(f"[{type.upper()}] {text}")
+
+    def closeEvent(self, event):
+        """Minimize to tray instead of quitting."""
+        event.ignore()
+        self.hide()
+        
+    def force_quit(self):
+        """Actually quit the application."""
+        QApplication.instance().quit()

@@ -5,7 +5,8 @@ import logging
 import traceback
 
 # Setup Logging
-log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log")
+from Jarvis.config import LOGS_DIR
+log_file = os.path.join(LOGS_DIR, "crash.log")
 logging.basicConfig(
     filename=log_file,
     level=logging.ERROR,
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
 from PyQt6.QtMultimedia import QMediaPlayer
 from Jarvis.ui.window import MainWindow
+from Jarvis.ui.tray import JarvisTrayIcon
 from Jarvis.core.orchestrator import Orchestrator
 from Jarvis.output.tts import TTS
 from Jarvis.input.listener import Listener
@@ -44,16 +46,35 @@ class Worker(QObject):
 def main():
     try:
         app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)  # Keep running when window hides
 
         orchestrator = Orchestrator()
         tts = TTS()
         worker = Worker()
 
         window = MainWindow()
+        # Don't show immediately if we want silent start, but generally show on launch
         window.show()
 
         # Listener (fully autonomous)
         listener = Listener()
+
+        # System Tray
+        tray = JarvisTrayIcon()
+        
+        # Connect Tray Signals
+        tray.on_show_window.connect(window.show)
+        tray.on_show_window.connect(window.activateWindow)
+        tray.on_quit_app.connect(app.quit)
+        
+        def toggle_listening():
+            is_paused = listener.toggle_pause()
+            # Loop handled in listener, state emitted automatically
+            
+        tray.on_toggle_listening.connect(toggle_listening)
+        
+        # Connect Listener state to Tray Icon
+        listener.state_changed.connect(tray.update_icon, Qt.ConnectionType.QueuedConnection)
 
         # Thread-safe UI connections
         worker.output_ready.connect(window.append_terminal_output, Qt.ConnectionType.QueuedConnection)
