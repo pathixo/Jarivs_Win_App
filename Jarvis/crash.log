@@ -4476,3 +4476,9 @@ Traceback (most recent call last):
     worker.execute_ready.connect(window.terminal.execute_and_display, Qt.ConnectionType.QueuedConnection)
                                  ^^^^^^^^^^^^^^^
 AttributeError: 'MainWindow' object has no attribute 'terminal'
+2026-02-20 13:02:47,008 - ERROR - Main Loop Crash
+Traceback (most recent call last):
+  File "D:\Coding\Projects\Antigravity\Jarvis\main.py", line 62, in main
+    listener.state_changed.connect(window.orb.set_state, Qt.ConnectionType.QueuedConnection)
+                                   ^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'ThinkingOrb' object has no attribute 'set_state'
