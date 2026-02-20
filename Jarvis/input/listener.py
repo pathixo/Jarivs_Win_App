@@ -1,110 +1,251 @@
-
-import struct
-import pvporcupine
 import threading
 import pyaudio
+import wave
+import os
+import time
+import numpy as np
+import logging
+from PyQt6.QtCore import QObject, pyqtSignal
 from Jarvis.config import PORCUPINE_ACCESS_KEY
-from Jarvis.input.audio_capture import AudioCapture
-# from faster_whisper import WhisperModel # Uncomment when ready
 
-class Listener:
-    def __init__(self, on_wake_word=None, on_command=None):
-        self.on_wake_word = on_wake_word
-        self.on_command = on_command
+
+class Listener(QObject):
+    """
+    Fully autonomous voice listener with VAD.
+    Always listening — detects speech via energy threshold,
+    records until silence, transcribes, emits command.
+    """
+    state_changed = pyqtSignal(str)
+    command_received = pyqtSignal(str)
+
+    SPEECH_THRESHOLD = 500
+    SILENCE_THRESHOLD = 300
+    SILENCE_DURATION = 0.6
+    MIN_SPEECH_DURATION = 0.3
+    MAX_DURATION = 15.0
+
+    RATE = 16000
+    CHANNELS = 1
+    CHUNK = 1024
+    FORMAT = pyaudio.paInt16
+
+    def __init__(self):
+        super().__init__()
         self.listening = False
-        self.porcupine = None
-        self.audio = AudioCapture()
-
-        if PORCUPINE_ACCESS_KEY:
-            try:
-                self.porcupine = pvporcupine.create(access_key=PORCUPINE_ACCESS_KEY, keywords=["jarvis"])
-                print("Porcupine initialized successfully")
-            except Exception as e:
-                print(f"Porcupine Init Error: {e}")
-        else:
-            print("Porcupine Access Key missing. Voice disabled.")
+        self.manual_pause = False
+        self.model = None
+        self.model_lock = threading.Lock()
+        self._is_processing = False
+        self._pa = None
+        self._stream = None
 
     def start(self):
-        if not self.porcupine: return
         self.listening = True
+        threading.Thread(target=self._preload_model, daemon=True).start()
         threading.Thread(target=self._listen_loop, daemon=True).start()
-
-    def listen_for_command(self):
-        """
-        Records audio after wake word and transcribes it relative to faster-whisper.
-        For now, we simulate or use a simple recording if whisper is not fully set up.
-        """
-        print("Listening for command...")
-        # 1. Record audio for fixed duration or silence detection
-        # Simple fixed duration for MVP
-        self.audio.stop_recording() # Stop continuous stream
-        self.audio.start_recording() # Restart freshly? or just read
-        
-        # Actually we need a separate recording logic for command
-        # For MVP let's record 5 seconds
-        frames = []
-        for _ in range(0, int(16000 / 1024 * 5)):
-            data = self.audio.read_chunk()
-            if data: frames.append(data)
-        
-        print("Processing command...")
-        # Save to temp file
-        import wave
-        filename = "command.wav"
-        wf = wave.open(filename, 'wb')
-        wf.setnchannels(1)
-        wf.setsampwidth(self.audio.p.get_sample_size(pyaudio.paInt16)) # 16-bit
-        wf.setframerate(16000)
-        wf.writeframes(b''.join(frames))
-        wf.close()
-        
-        # Transcribe
-        try:
-            from faster_whisper import WhisperModel
-            model = WhisperModel("tiny", device="cpu", compute_type="int8")
-            segments, info = model.transcribe(filename, beam_size=5)
-            text = " ".join([segment.text for segment in segments])
-            print(f"Transcribed: {text}")
-            
-            if self.on_command:
-                self.on_command(text)
-        except ImportError:
-            print("faster-whisper not installed or found.")
-        except Exception as e:
-            print(f"STT Error: {e}")
-            
-        # Resume wake word listening?
-        # Ideally we should go back to listen loop, but current logic is linear in loop
-        pass
-
-    def _listen_loop(self):
-        # This loop needs to be carefully managed to avoid blocking UI
-        if not self.audio.stream:
-             self.audio.start_recording() 
-        
-        print("Listening for wake word...")
-        while self.listening:
-            try:
-                pcm = self.audio.read_chunk()
-                if pcm and len(pcm) == self.porcupine.frame_length * 2: 
-                   frame = struct.unpack_from("h" * self.porcupine.frame_length, pcm)
-                   keyword_index = self.porcupine.process(frame)
-                   if keyword_index >= 0:
-                       print("Wake word detected!")
-                       if self.on_wake_word:
-                           self.on_wake_word()
-                       
-                       # Trigger STT
-                       self.listen_for_command()
-                       
-                       # Resume listening for wake word
-                       print("Resuming wake word listener...")
-            except Exception as e:
-                print(f"Listening Error: {e}")
-                break
 
     def stop(self):
         self.listening = False
-        if self.porcupine:
-            self.porcupine.delete()
-        self.audio.close()
+        self._close_stream()
+
+    def set_processing(self, is_processing):
+        self._is_processing = is_processing
+        # Only emit state if not manually paused
+        if not self.manual_pause:
+             self.state_changed.emit("processing" if is_processing else "waiting")
+
+    def toggle_pause(self):
+        """Manual toggle for user pause command."""
+        self.manual_pause = not self.manual_pause
+        if self.manual_pause:
+            self.state_changed.emit("paused")
+        else:
+            self.state_changed.emit("waiting")
+        return self.manual_pause
+
+    def _open_stream(self):
+        """Open the microphone stream."""
+        try:
+            if self._pa is None:
+                self._pa = pyaudio.PyAudio()
+            if self._stream is None or not self._stream.is_active():
+                self._stream = self._pa.open(
+                    format=self.FORMAT,
+                    channels=self.CHANNELS,
+                    rate=self.RATE,
+                    input=True,
+                    frames_per_buffer=self.CHUNK
+                )
+            return True
+        except Exception as e:
+            print(f"Mic open error: {e}")
+            return False
+
+    def _close_stream(self):
+        """Close the microphone stream safely."""
+        try:
+            if self._stream:
+                self._stream.stop_stream()
+                self._stream.close()
+                self._stream = None
+        except Exception:
+            self._stream = None
+
+    def _preload_model(self):
+        try:
+            with self.model_lock:
+                if self.model:
+                    return
+                print("Loading Whisper model...")
+                from faster_whisper import WhisperModel
+                self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
+                print("Whisper model ready.")
+        except Exception as e:
+            print(f"Model load error: {e}")
+            logging.error(f"Model Preload Error: {e}", exc_info=True)
+
+    def _listen_loop(self):
+        try:
+            if not self._open_stream():
+                print("Cannot open microphone. Text-only mode.")
+                return
+
+            print("Autonomous listener active.")
+            self.state_changed.emit("waiting")
+
+            while self.listening:
+                try:
+                    if self._is_processing or self.manual_pause:
+                        time.sleep(0.1)
+                        continue
+
+                    if self._stream is None or not self._stream.is_active():
+                        if not self._open_stream():
+                            time.sleep(1)
+                            continue
+
+                    try:
+                        data = self._stream.read(self.CHUNK, exception_on_overflow=False)
+                    except Exception:
+                        time.sleep(0.05)
+                        continue
+
+                    if not data:
+                        time.sleep(0.05)
+                        continue
+
+                    # Voice Activity Detection
+                    try:
+                        audio_data = np.frombuffer(data, dtype=np.int16)
+                        rms = np.sqrt(np.mean(audio_data.astype(np.float32)**2))
+                    except Exception:
+                        continue
+
+                    if rms > self.SPEECH_THRESHOLD:
+                        self.state_changed.emit("listening")
+                        frames = self._record_until_silence(data)
+                        if frames:
+                            # CLOSE stream before transcribing to avoid native code conflict
+                            self._close_stream()
+                            self.state_changed.emit("processing")
+                            self._transcribe(frames)
+                            # Reopen stream after transcription
+                            self._open_stream()
+                        self.state_changed.emit("waiting")
+
+                except Exception as e:
+                    if "Input overflow" not in str(e):
+                        print(f"Listen loop error: {e}")
+                    time.sleep(0.05)
+
+        except Exception as e:
+            print(f"Listener CRITICAL: {e}")
+            logging.error(f"Listener CRITICAL: {e}", exc_info=True)
+
+    def _record_until_silence(self, initial_chunk):
+        """Record speech until silence is detected."""
+        frames = [initial_chunk]
+        start_time = time.time()
+        silence_start = None
+
+        while True:
+            try:
+                data = self._stream.read(self.CHUNK, exception_on_overflow=False)
+            except Exception:
+                break
+
+            if not data:
+                break
+
+            frames.append(data)
+            elapsed = time.time() - start_time
+
+            if elapsed > self.MAX_DURATION:
+                break
+
+            try:
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                rms = np.sqrt(np.mean(audio_data.astype(np.float32)**2))
+            except Exception:
+                rms = 0
+
+            if rms < self.SILENCE_THRESHOLD:
+                if silence_start is None:
+                    silence_start = time.time()
+                elif time.time() - silence_start > self.SILENCE_DURATION:
+                    break
+            else:
+                silence_start = None
+
+        duration = time.time() - start_time
+        print(f"Recorded: {duration:.1f}s, {len(frames)} chunks")
+
+        if duration < self.MIN_SPEECH_DURATION or len(frames) < 5:
+            print("Too short, skipping.")
+            return None
+
+        return frames
+
+    def _transcribe(self, frames):
+        """Save audio to WAV and transcribe with Whisper."""
+        filename = os.path.join(os.path.dirname(__file__), "command.wav")
+
+        try:
+            pa = pyaudio.PyAudio()
+            sample_width = pa.get_sample_size(self.FORMAT)
+            pa.terminate()
+
+            wf = wave.open(filename, 'wb')
+            wf.setnchannels(self.CHANNELS)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(self.RATE)
+            wf.writeframes(b''.join(frames))
+            wf.close()
+            print(f"Saved WAV: {os.path.getsize(filename)} bytes")
+        except Exception as e:
+            print(f"WAV save error: {e}")
+            return
+
+        try:
+            with self.model_lock:
+                if not self.model:
+                    print("Loading Whisper model on demand...")
+                    from faster_whisper import WhisperModel
+                    self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
+
+            print("Transcribing...")
+            segments, info = self.model.transcribe(filename, beam_size=1, language="en")
+            segments_list = list(segments)
+            text = " ".join([s.text for s in segments_list]).strip()
+
+            print(f"Transcribed: '{text}' ({len(segments_list)} segments)")
+
+            if text and len(text) > 2:
+                print(f">>> COMMAND: {text}")
+                self.command_received.emit(text)
+            else:
+                print(f"Filtered: '{text}'")
+
+        except Exception as e:
+            print(f"STT Error: {e}")
+            logging.error(f"STT Error: {e}", exc_info=True)
