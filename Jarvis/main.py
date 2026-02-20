@@ -4,6 +4,12 @@ import threading
 import logging
 import traceback
 
+# Add parent directory to sys.path FIRST (before any Jarvis imports)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
 # Setup Logging
 from Jarvis.config import LOGS_DIR
 log_file = os.path.join(LOGS_DIR, "crash.log")
@@ -21,11 +27,6 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
 
 sys.excepthook = handle_exception
-
-# Add parent directory to sys.path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
