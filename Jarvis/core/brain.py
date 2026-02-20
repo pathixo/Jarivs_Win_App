@@ -14,15 +14,23 @@ class Brain:
         Generates response using Ollama API.
         Current implementation is synchronous and non-streaming for simplicity.
         """
+        system_prompt = (
+            "You are Jarvis, a helpful AI assistant. "
+            "You can access the file system using specific commands. "
+            "If the user asks to create, read, or list files, respond with the exact command syntax below:\n"
+            "- To list files: 'list files [directory]'\n"
+            "- To read a file: 'read file [filename]'\n"
+            "- To create a file: 'create file [filename] with content [content]'\n"
+            "Do not wrap these commands in markdown or extra text if you want them executed directly. "
+            "Otherwise, just chat normally."
+        )
+
         payload = {
             "model": OLLAMA_MODEL,
             "prompt": text,
+            "system": system_prompt,
             "stream": False,
-            # "context": history # Ollama uses 'context' for history (list of ints), or 'messages' for chat format
         }
-        
-        # If we want chat history, we should likely use the /api/chat endpoint instead of /api/generate
-        # But for now, complying with original interface "text" input
         
         try:
             response = requests.post(OLLAMA_URL, json=payload, timeout=30)
