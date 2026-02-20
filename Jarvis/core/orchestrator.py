@@ -13,24 +13,42 @@ class Orchestrator:
         Takes user input and decides whether to handle locally or route to cloud brain.
         """
         command_text = command_text.strip()
+        
+        # 0. Output to console (native terminal feel)
+        print(f"\n> {command_text}")
 
+        # 1. LLM Meta-commands
         if re.search(r"^llm\b", command_text, re.IGNORECASE):
             return self._handle_llm_command(command_text)
 
-        # Simple regex based routing for demonstration
-        if re.search(r"^\b(cls|dir|ls|cd|pwd)\b", command_text, re.IGNORECASE):
-            return self.tools.execute_terminal_command(command_text)
-        elif re.search(r"^(run|execute)\s+(.*)", command_text, re.IGNORECASE):
-            cmd = re.search(r"^(run|execute)\s+(.*)", command_text, re.IGNORECASE).group(2)
-            return self.tools.execute_terminal_command(cmd)
+        # 2. Native Shell Commands (Powershell/CMD)
+        # Check for common shell commands or explicit "run/exec"
+        shell_patterns = [
+            r"^\b(cls|dir|ls|cd|pwd|ipconfig|whoami|ping|echo|mkdir|rm|del|copy|move|type|cat|get-process|start|notepad|calc|explorer)\b",
+            r"^\b(git|npm|pip|python|node)\b",
+            r"^(run|exec|execute)\s+(.*)"
+        ]
+        
+        is_shell = False
+        cmd_to_run = command_text
+        
+        for pattern in shell_patterns:
+            match = re.search(pattern, command_text, re.IGNORECASE)
+            if match:
+                is_shell = True
+                if match.groups() and len(match.groups()) >= 2:
+                    # If it was "run <cmd>", extract <cmd>
+                    cmd_to_run = match.group(2)
+                break
+        
+        if is_shell:
+             return self._execute_shell(cmd_to_run)
+             
         elif "time" in command_text.lower():
             import datetime
             return f"Current time is {datetime.datetime.now().strftime('%H:%M:%S')}"
-        
-        # File System Tools
-        elif re.search(r"^(list files|ls|dir)\s+(.*)", command_text, re.IGNORECASE):
-            path = re.search(r"^(list files|ls|dir)\s+(.*)", command_text, re.IGNORECASE).group(2)
-            return self.tools.list_files(path.strip())
+            
+        # 3. File System Tools (Legacy wrapper, maybe keep for specific syntax)
         elif re.search(r"^read file\s+(.*)", command_text, re.IGNORECASE):
             path = re.search(r"^read file\s+(.*)", command_text, re.IGNORECASE).group(1)
             return self.tools.read_file(path.strip())
@@ -40,8 +58,43 @@ class Orchestrator:
             content = match.group(2)
             return self.tools.write_file(filepath, content)
             
-        # Complex commands route to Local Brain (Ollama)
+        # 4. Complex commands route to Local Brain (Ollama)
         return self.brain.generate_response(command_text)
+
+    def _execute_shell(self, command):
+        """Run command in real subprocess and return output."""
+        import subprocess
+        try:
+            # Use powershell for better consistency on Windows
+            result = subprocess.run(
+                ["powershell", "-Command", command],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            
+            output = result.stdout.strip()
+            error = result.stderr.strip()
+            
+            final_out = ""
+            if output:
+                final_out += output
+            if error:
+                final_out += f"\nError: {error}"
+            
+            if not final_out:
+                final_out = "Command executed."
+                
+            print(final_out) # Show in real terminal
+            
+            # Truncate for TTS if too long
+            if len(final_out) > 300:
+                short_out = final_out[:300] + "... (output truncated)"
+                return short_out
+            return final_out
+            
+        except Exception as e:
+            return f"Shell Error: {e}"
 
     def _handle_llm_command(self, command_text):
         help_text = (
