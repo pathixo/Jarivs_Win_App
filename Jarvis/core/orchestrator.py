@@ -22,5 +22,18 @@ class Orchestrator:
             import datetime
             return f"Current time is {datetime.datetime.now().strftime('%H:%M:%S')}"
         
-        # Complex commands route to Gemini
+        # File System Tools
+        elif re.search(r"^(list files|ls|dir)\s+(.*)", command_text, re.IGNORECASE):
+            path = re.search(r"^(list files|ls|dir)\s+(.*)", command_text, re.IGNORECASE).group(2)
+            return self.tools.list_files(path.strip())
+        elif re.search(r"^read file\s+(.*)", command_text, re.IGNORECASE):
+            path = re.search(r"^read file\s+(.*)", command_text, re.IGNORECASE).group(1)
+            return self.tools.read_file(path.strip())
+        elif re.search(r"^create file\s+(.*?)\s+with content\s+(.*)", command_text, re.IGNORECASE):
+            match = re.search(r"^create file\s+(.*?)\s+with content\s+(.*)", command_text, re.IGNORECASE)
+            filepath = match.group(1).strip()
+            content = match.group(2)
+            return self.tools.write_file(filepath, content)
+            
+        # Complex commands route to Local Brain (Ollama)
         return self.brain.generate_response(command_text)
