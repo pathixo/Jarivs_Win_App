@@ -1,140 +1,689 @@
+"""
+Brain Module — Multi-Provider LLM Interface Layer
+===================================================
+Provides a unified interface to multiple LLM backends:
+  - Ollama  (local, default)
+  - Gemini  (Google Cloud)
+  - Groq    (Groq Cloud — fast inference)
+  - Grok    (xAI Cloud)
+
+Supports conversation memory, chain-of-thought reasoning, retry logic,
+provider failover, and structured settings management.
+"""
+
+import logging
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional
+
 import requests
-from Jarvis.config import OLLAMA_URL, OLLAMA_MODEL
+
+from Jarvis.config import (
+    OLLAMA_URL,
+    OLLAMA_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    GROQ_API_KEY,
+    GROQ_MODEL,
+    GROK_API_KEY,
+    GROK_MODEL,
+    LLM_PROVIDER,
+)
+
+logger = logging.getLogger("jarvis.brain")
+
+
+# ─────────────────────────── Constants ──────────────────────────────────────
+
+class Provider(str, Enum):
+    OLLAMA = "ollama"
+    GEMINI = "gemini"
+    GROQ   = "groq"
+    GROK   = "grok"
 
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are Jarvis, a helpful AI assistant. "
-    "You can access the file system using specific commands. "
-    "If the user asks to create, read, or list files, respond with the exact command syntax below:\n"
-    "- To list files: 'list files [directory]'\n"
-    "- To read a file: 'read file [filename]'\n"
-    "- To create a file: 'create file [filename] with content [content]'\n"
-    "Do not wrap these commands in markdown or extra text if you want them executed directly. "
-    "Otherwise, just chat normally."
+    "You are Jarvis, an autonomous AI assistant running on a Windows PC.\n\n"
+    "## Core Behavior\n"
+    "You EXECUTE tasks — you do not just describe them.\n"
+    "When the user asks you to perform an actionable task (create files, folders, "
+    "run programs, system commands, open apps, etc.), you MUST output the exact "
+    "PowerShell command wrapped in [SHELL] and [/SHELL] tags.\n\n"
+    "## Thinking Process\n"
+    "Before answering, THINK step-by-step about what the user actually wants:\n"
+    "1. What is the user's intent?\n"
+    "2. Is this a conversational query or an actionable task?\n"
+    "3. If actionable — what is the safest, most correct PowerShell command?\n"
+    "4. Could this command be destructive? If so, be cautious.\n\n"
+    "## Examples\n"
+    "User: create a folder named Pokemon\n"
+    "Response: Creating folder 'Pokemon' for you.\n[SHELL]New-Item -ItemType Directory -Name 'Pokemon' -Force[/SHELL]\n\n"
+    "User: what time is it\n"
+    "Response: Let me check.\n[SHELL]Get-Date -Format 'hh:mm:ss tt'[/SHELL]\n\n"
+    "User: open notepad\n"
+    "Response: Opening Notepad.\n[SHELL]Start-Process notepad[/SHELL]\n\n"
+    "User: list files in Downloads\n"
+    "Response: Here are your Downloads:\n"
+    "[SHELL]Get-ChildItem $env:USERPROFILE\\Downloads | Format-Table Name, Length, LastWriteTime -AutoSize[/SHELL]\n\n"
+    "User: hello / how are you / tell me a joke\n"
+    "Response: (just chat naturally, no [SHELL] tags needed)\n\n"
+    "## Rules\n"
+    "- ALWAYS use [SHELL]...[/SHELL] for any actionable request.\n"
+    "- Use PowerShell syntax (Windows). Prefer modern cmdlets over legacy aliases.\n"
+    "- Keep responses SHORT and direct.\n"
+    "- Do NOT ask for confirmation — just do it.\n"
+    "- For conversational queries, respond naturally without [SHELL] tags.\n"
+    "- If a task could be destructive (delete, format, etc.), warn the user first.\n"
+    "- NEVER hallucinate file paths or commands. If unsure, say so.\n"
 )
 
-class Brain:
-    def __init__(self):
-        self.output_buffer = ""
-        self.ollama_url = OLLAMA_URL
-        self.model = OLLAMA_MODEL
-        self.timeout = 30
-        self.system_prompt = DEFAULT_SYSTEM_PROMPT
-        self.temperature = 0.7
-        self.top_p = 0.9
-        self.max_tokens = 256
-        print(f"Brain initialized with Local LLM: {self.model} at {self.ollama_url}")
 
-    def generate_response(self, text, history=None):
-        """
-        Generates response using Ollama API.
-        Current implementation is synchronous and non-streaming for simplicity.
-        """
+# ─────────────────────────── Settings ───────────────────────────────────────
+
+@dataclass
+class BrainSettings:
+    """Immutable-ish config snapshot; centralizes all tuning knobs."""
+    provider: str = "ollama"
+    model: str = OLLAMA_MODEL
+    temperature: float = 0.7
+    top_p: float = 0.9
+    max_tokens: int = 512
+    timeout: int = 60
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    max_history: int = 20  # conversation memory window
+
+    def validate_temperature(self, value: float) -> bool:
+        return 0.0 <= value <= 2.0
+
+    def validate_top_p(self, value: float) -> bool:
+        return 0.0 < value <= 1.0
+
+    def validate_max_tokens(self, value: int) -> bool:
+        return value > 0
+
+    def validate_timeout(self, value: int) -> bool:
+        return value > 0
+
+
+# ──────────────────────── Conversation Memory ───────────────────────────────
+
+@dataclass
+class Message:
+    role: str       # "user" | "assistant" | "system"
+    content: str
+    timestamp: float = field(default_factory=time.time)
+
+
+class ConversationMemory:
+    """Sliding-window conversation buffer for multi-turn context."""
+
+    def __init__(self, max_messages: int = 20):
+        self._messages: list[Message] = []
+        self._max = max_messages
+
+    def add(self, role: str, content: str) -> None:
+        self._messages.append(Message(role=role, content=content))
+        # Trim oldest (keep system prompt if present)
+        if len(self._messages) > self._max:
+            self._messages = self._messages[-self._max:]
+
+    def get_history(self) -> list[dict]:
+        """Return history in OpenAI-compatible format."""
+        return [{"role": m.role, "content": m.content} for m in self._messages]
+
+    def clear(self) -> None:
+        self._messages.clear()
+
+    @property
+    def length(self) -> int:
+        return len(self._messages)
+
+
+# ──────────────────────── Provider Backends ─────────────────────────────────
+
+class _OllamaBackend:
+    """Ollama local LLM via REST API."""
+
+    def __init__(self, base_url: str):
+        self._url = base_url
+
+    def generate(self, settings: BrainSettings, prompt: str, history: list[dict]) -> str:
         payload = {
-            "model": self.model,
-            "prompt": text,
-            "system": self.system_prompt,
+            "model": settings.model,
+            "prompt": prompt,
+            "system": settings.system_prompt,
             "stream": False,
             "options": {
-                "temperature": self.temperature,
-                "top_p": self.top_p,
-                "num_predict": self.max_tokens,
+                "temperature": settings.temperature,
+                "top_p": settings.top_p,
+                "num_predict": settings.max_tokens,
             },
         }
-        
-        try:
-            response = requests.post(self.ollama_url, json=payload, timeout=self.timeout)
-            response.raise_for_status()
-            
-            data = response.json()
-            return data.get("response", "")
-            
-        except requests.exceptions.ConnectionError:
-            return "Error: Could not connect to Local Brain (Ollama). Is it running?"
-        except Exception as e:
-            return f"Brain Error: {str(e)}"
+        # If we have history, add context via concatenation (Ollama /api/generate)
+        if history:
+            context_str = "\n".join(
+                f"{m['role'].capitalize()}: {m['content']}" for m in history[-6:]
+            )
+            payload["prompt"] = f"Previous conversation:\n{context_str}\n\nUser: {prompt}"
 
-    def set_model(self, model_name):
+        resp = requests.post(self._url, json=payload, timeout=settings.timeout)
+        resp.raise_for_status()
+        return resp.json().get("response", "")
+
+    def health_check(self) -> bool:
+        try:
+            r = requests.get("http://localhost:11434/api/tags", timeout=5)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def list_models(self) -> tuple[bool, list[str] | str]:
+        try:
+            r = requests.get("http://localhost:11434/api/tags", timeout=5)
+            r.raise_for_status()
+            models = r.json().get("models", [])
+            names = [m.get("name") for m in models if m.get("name")]
+            return True, names
+        except Exception as e:
+            return False, f"Could not fetch local models: {e}"
+
+
+class _GeminiBackend:
+    """Google Gemini via REST API (no SDK dependency)."""
+
+    BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+
+    def generate(self, settings: BrainSettings, prompt: str, history: list[dict]) -> str:
+        if not self._api_key:
+            raise ValueError("Gemini API key not configured. Set GEMINI_API_KEY in .env")
+
+        model = settings.model if settings.provider == "gemini" else GEMINI_MODEL
+        url = f"{self.BASE_URL}/{model}:generateContent?key={self._api_key}"
+
+        # Build messages
+        contents = []
+
+        # Add system instruction as first user/model exchange
+        contents.append({
+            "role": "user",
+            "parts": [{"text": f"[SYSTEM INSTRUCTION]\n{settings.system_prompt}"}]
+        })
+        contents.append({
+            "role": "model",
+            "parts": [{"text": "Understood. I am Jarvis, ready to assist."}]
+        })
+
+        # Add conversation history
+        for msg in history[-8:]:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+        # Add current prompt
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": settings.temperature,
+                "topP": settings.top_p,
+                "maxOutputTokens": settings.max_tokens,
+            },
+        }
+
+        resp = requests.post(url, json=payload, timeout=settings.timeout)
+
+        # Handle rate limiting with retry-after
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 5))
+            logger.warning("Gemini rate limited, waiting %ds...", retry_after)
+            time.sleep(min(retry_after, 10))  # Wait up to 10s
+            resp = requests.post(url, json=payload, timeout=settings.timeout)
+
+        resp.raise_for_status()
+
+        data = resp.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            error_info = data.get("error", {})
+            raise ValueError(f"Gemini returned no candidates: {error_info}")
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        return parts[0].get("text", "") if parts else ""
+
+    def health_check(self) -> bool:
+        if not self._api_key:
+            return False
+        try:
+            url = f"{self.BASE_URL}?key={self._api_key}"
+            r = requests.get(url, timeout=10)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def list_models(self) -> tuple[bool, list[str] | str]:
+        if not self._api_key:
+            return False, "Gemini API key not configured."
+        try:
+            url = f"{self.BASE_URL}?key={self._api_key}"
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            models = r.json().get("models", [])
+            names = [m.get("name", "").replace("models/", "") for m in models]
+            return True, names
+        except Exception as e:
+            return False, f"Could not fetch Gemini models: {e}"
+
+
+class _GroqBackend:
+    """Groq Cloud via OpenAI-compatible REST API (fast inference)."""
+
+    BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+
+    def generate(self, settings: BrainSettings, prompt: str, history: list[dict]) -> str:
+        if not self._api_key:
+            raise ValueError("Groq API key not configured. Set GROQ_API_KEY in .env")
+
+        model = settings.model if settings.provider == "groq" else GROQ_MODEL
+
+        messages = [{"role": "system", "content": settings.system_prompt}]
+
+        for msg in history[-8:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": settings.temperature,
+            "top_p": settings.top_p,
+            "max_tokens": settings.max_tokens,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        resp = requests.post(self.BASE_URL, json=payload, headers=headers, timeout=settings.timeout)
+        resp.raise_for_status()
+
+        data = resp.json()
+        choices = data.get("choices", [])
+        if not choices:
+            raise ValueError(f"Groq returned no choices: {data}")
+
+        return choices[0].get("message", {}).get("content", "")
+
+    def health_check(self) -> bool:
+        if not self._api_key:
+            return False
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def list_models(self) -> tuple[bool, list[str] | str]:
+        if not self._api_key:
+            return False, "Groq API key not configured."
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+            r.raise_for_status()
+            models = r.json().get("data", [])
+            names = [m.get("id", "") for m in models]
+            return True, names
+        except Exception as e:
+            return False, f"Could not fetch Groq models: {e}"
+
+
+class _GrokBackend:
+    """xAI Grok via OpenAI-compatible REST API."""
+
+    BASE_URL = "https://api.x.ai/v1/chat/completions"
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+
+    def generate(self, settings: BrainSettings, prompt: str, history: list[dict]) -> str:
+        if not self._api_key:
+            raise ValueError("Grok API key not configured. Set GROK_API_KEY in .env")
+
+        model = settings.model if settings.provider == "grok" else GROK_MODEL
+
+        messages = [{"role": "system", "content": settings.system_prompt}]
+
+        for msg in history[-8:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": settings.temperature,
+            "top_p": settings.top_p,
+            "max_tokens": settings.max_tokens,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        resp = requests.post(self.BASE_URL, json=payload, headers=headers, timeout=settings.timeout)
+        resp.raise_for_status()
+
+        data = resp.json()
+        choices = data.get("choices", [])
+        if not choices:
+            raise ValueError(f"Grok returned no choices: {data}")
+
+        return choices[0].get("message", {}).get("content", "")
+
+    def health_check(self) -> bool:
+        if not self._api_key:
+            return False
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.x.ai/v1/models", headers=headers, timeout=10)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def list_models(self) -> tuple[bool, list[str] | str]:
+        if not self._api_key:
+            return False, "Grok API key not configured."
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.x.ai/v1/models", headers=headers, timeout=10)
+            r.raise_for_status()
+            models = r.json().get("data", [])
+            names = [m.get("id", "") for m in models]
+            return True, names
+        except Exception as e:
+            return False, f"Could not fetch Grok models: {e}"
+
+
+# ─────────────────────────── Brain ──────────────────────────────────────────
+
+class Brain:
+    """
+    Industry-grade LLM interface with multi-provider support,
+    conversation memory, retry logic, and provider failover.
+    """
+
+    MAX_RETRIES = 3
+    RETRY_DELAY = 1.0  # seconds
+
+    def __init__(self, provider: Optional[str] = None):
+        self.settings = BrainSettings(
+            provider=provider or LLM_PROVIDER,
+            model=self._default_model_for(provider or LLM_PROVIDER),
+        )
+        self.memory = ConversationMemory(max_messages=self.settings.max_history)
+
+        # Initialize all backends (lazy — they only call APIs when used)
+        self._backends = {
+            Provider.OLLAMA: _OllamaBackend(OLLAMA_URL),
+            Provider.GEMINI: _GeminiBackend(GEMINI_API_KEY),
+            Provider.GROQ:   _GroqBackend(GROQ_API_KEY),
+            Provider.GROK:   _GrokBackend(GROK_API_KEY),
+        }
+
+        logger.info(
+            "Brain initialized | provider=%s | model=%s",
+            self.settings.provider, self.settings.model,
+        )
+        print(f"Brain initialized | provider={self.settings.provider} | model={self.settings.model}")
+
+    # ── Public API ──────────────────────────────────────────────────────────
+
+    def generate_response(self, text: str, history: list[dict] | None = None) -> str:
+        """
+        Generate an LLM response with retry + optional failover.
+        Stores conversation in memory for multi-turn context.
+        """
+        if not text or not text.strip():
+            return ""
+
+        # Use internal memory if no external history supplied
+        conv_history = history if history is not None else self.memory.get_history()
+
+        backend = self._get_backend()
+        response = ""
+
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                t0 = time.time()
+                response = backend.generate(self.settings, text.strip(), conv_history)
+                elapsed = time.time() - t0
+
+                logger.info(
+                    "LLM response | provider=%s | model=%s | time=%.2fs | len=%d",
+                    self.settings.provider, self.settings.model, elapsed, len(response),
+                )
+
+                # Store in memory
+                self.memory.add("user", text.strip())
+                self.memory.add("assistant", response)
+
+                return response
+
+            except requests.exceptions.ConnectionError:
+                logger.warning("Connection failed (attempt %d/%d)", attempt, self.MAX_RETRIES)
+                if attempt < self.MAX_RETRIES:
+                    time.sleep(self.RETRY_DELAY * attempt)  # exponential-ish backoff
+                    continue
+                # Try failover
+                fallback = self._try_failover(text.strip(), conv_history)
+                if fallback:
+                    return fallback
+                return f"Error: Could not connect to {self.settings.provider} LLM. Is it running?"
+
+            except requests.exceptions.Timeout:
+                logger.warning("Request timed out (attempt %d/%d)", attempt, self.MAX_RETRIES)
+                if attempt < self.MAX_RETRIES:
+                    time.sleep(self.RETRY_DELAY)
+                    continue
+                return f"Error: {self.settings.provider} LLM timed out after {self.settings.timeout}s."
+
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 0
+                logger.error("HTTP error %d: %s", status, e)
+
+                # Rate limit — retry with backoff
+                if status == 429:
+                    wait = min(self.RETRY_DELAY * (2 ** attempt), 15)
+                    logger.warning("Rate limited (429), waiting %.1fs (attempt %d/%d)", wait, attempt, self.MAX_RETRIES)
+                    if attempt < self.MAX_RETRIES:
+                        time.sleep(wait)
+                        continue
+                    # Last resort: try failover to another provider
+                    fallback = self._try_failover(text.strip(), conv_history)
+                    if fallback:
+                        return fallback
+                    return f"Error: {self.settings.provider} rate limited. Try again in a minute or switch provider with 'llm provider groq'."
+
+                # Auth error
+                if status in (401, 403):
+                    return f"Error: {self.settings.provider} API key is invalid or expired. Check your .env file."
+
+                return f"Error: {self.settings.provider} returned HTTP {status}."
+
+            except ValueError as e:
+                logger.error("Value error: %s", e)
+                return f"Error: {e}"
+
+            except Exception as e:
+                logger.error("Unexpected error: %s", e, exc_info=True)
+                if attempt < self.MAX_RETRIES:
+                    time.sleep(self.RETRY_DELAY)
+                    continue
+                return f"Brain Error: {e}"
+
+        return response or "Error: Failed to generate response."
+
+    def set_provider(self, provider_name: str) -> tuple[bool, str]:
+        """Switch the active LLM provider."""
+        provider_name = provider_name.strip().lower()
+        try:
+            provider = Provider(provider_name)
+        except ValueError:
+            valid = ", ".join(p.value for p in Provider)
+            return False, f"Unknown provider '{provider_name}'. Valid: {valid}"
+
+        # Validate API key for cloud providers
+        key_map = {
+            Provider.GEMINI: (GEMINI_API_KEY, "GEMINI_API_KEY"),
+            Provider.GROQ:   (GROQ_API_KEY, "GROQ_API_KEY"),
+            Provider.GROK:   (GROK_API_KEY, "GROK_API_KEY"),
+        }
+        if provider in key_map:
+            api_key, env_name = key_map[provider]
+            if not api_key:
+                return False, f"Cannot switch to {provider.value}: {env_name} not set in .env"
+
+        old_provider = self.settings.provider
+        self.settings.provider = provider.value
+        self.settings.model = self._default_model_for(provider.value)
+
+        logger.info("Provider switched: %s → %s", old_provider, provider.value)
+        return True, f"Provider switched to '{provider.value}' (model: {self.settings.model})."
+
+    def set_model(self, model_name: str) -> tuple[bool, str]:
         model_name = (model_name or "").strip()
         if not model_name:
             return False, "Model name cannot be empty."
-        self.model = model_name
-        return True, f"LLM model set to '{self.model}'."
+        self.settings.model = model_name
+        return True, f"Model set to '{self.settings.model}' (provider: {self.settings.provider})."
 
-    def set_option(self, option_name, raw_value):
+    def set_option(self, option_name: str, raw_value: str) -> tuple[bool, str]:
         name = option_name.lower().strip()
         try:
             if name == "temperature":
                 value = float(raw_value)
-                if value < 0 or value > 2:
+                if not self.settings.validate_temperature(value):
                     return False, "temperature must be between 0 and 2."
-                self.temperature = value
-                return True, f"temperature set to {self.temperature}."
+                self.settings.temperature = value
+                return True, f"temperature set to {value}."
 
             if name == "top_p":
                 value = float(raw_value)
-                if value <= 0 or value > 1:
+                if not self.settings.validate_top_p(value):
                     return False, "top_p must be > 0 and <= 1."
-                self.top_p = value
-                return True, f"top_p set to {self.top_p}."
+                self.settings.top_p = value
+                return True, f"top_p set to {value}."
 
             if name == "max_tokens":
                 value = int(raw_value)
-                if value <= 0:
+                if not self.settings.validate_max_tokens(value):
                     return False, "max_tokens must be a positive integer."
-                self.max_tokens = value
-                return True, f"max_tokens set to {self.max_tokens}."
+                self.settings.max_tokens = value
+                return True, f"max_tokens set to {value}."
 
             if name == "timeout":
                 value = int(raw_value)
-                if value <= 0:
+                if not self.settings.validate_timeout(value):
                     return False, "timeout must be a positive integer (seconds)."
-                self.timeout = value
-                return True, f"timeout set to {self.timeout}s."
+                self.settings.timeout = value
+                return True, f"timeout set to {value}s."
 
-            return False, f"Unknown option '{option_name}'."
+            return False, f"Unknown option '{option_name}'. Valid: temperature, top_p, max_tokens, timeout."
         except ValueError:
             return False, f"Invalid value '{raw_value}' for {option_name}."
 
-    def set_system_prompt(self, prompt):
+    def set_system_prompt(self, prompt: str) -> tuple[bool, str]:
         prompt = (prompt or "").strip()
         if not prompt:
             return False, "System prompt cannot be empty."
-        self.system_prompt = prompt
+        self.settings.system_prompt = prompt
         return True, "System prompt updated."
 
-    def reset_settings(self):
-        self.model = OLLAMA_MODEL
-        self.timeout = 30
-        self.temperature = 0.7
-        self.top_p = 0.9
-        self.max_tokens = 256
-        self.system_prompt = DEFAULT_SYSTEM_PROMPT
-        return "LLM settings reset to defaults."
+    def reset_settings(self) -> str:
+        self.settings = BrainSettings(
+            provider=LLM_PROVIDER,
+            model=self._default_model_for(LLM_PROVIDER),
+        )
+        self.memory.clear()
+        return "Brain settings and memory reset to defaults."
 
-    def get_status(self):
+    def clear_memory(self) -> str:
+        self.memory.clear()
+        return "Conversation memory cleared."
+
+    def get_status(self) -> dict:
+        backend = self._get_backend()
+        is_healthy = backend.health_check()
         return {
-            "url": self.ollama_url,
-            "model": self.model,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "max_tokens": self.max_tokens,
-            "timeout": self.timeout,
-            "system_prompt_preview": self.system_prompt[:120],
+            "provider": self.settings.provider,
+            "model": self.settings.model,
+            "temperature": self.settings.temperature,
+            "top_p": self.settings.top_p,
+            "max_tokens": self.settings.max_tokens,
+            "timeout": self.settings.timeout,
+            "system_prompt_preview": self.settings.system_prompt[:120],
+            "memory_messages": self.memory.length,
+            "health": "connected" if is_healthy else "disconnected",
         }
 
-    def list_local_models(self):
-        try:
-            response = requests.get("http://localhost:11434/api/tags", timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            models = data.get("models", [])
-            names = [item.get("name") for item in models if item.get("name")]
-            if not names:
-                return True, []
-            return True, names
-        except Exception as e:
-            return False, f"Could not fetch local models: {str(e)}"
+    def list_local_models(self) -> tuple[bool, list[str] | str]:
+        backend = self._get_backend()
+        return backend.list_models()
 
-    def execute_tool(self, tool_call):
-        pass
+    def execute_tool(self, tool_call: dict) -> str:
+        """Placeholder for future tool/function-calling support."""
+        logger.warning("execute_tool called but not yet implemented: %s", tool_call)
+        return "Tool execution not yet implemented."
+
+    # ── Private Helpers ─────────────────────────────────────────────────────
+
+    def _get_backend(self):
+        provider = Provider(self.settings.provider)
+        return self._backends[provider]
+
+    def _default_model_for(self, provider: str) -> str:
+        defaults = {
+            "ollama": OLLAMA_MODEL,
+            "gemini": GEMINI_MODEL,
+            "groq":   GROQ_MODEL,
+            "grok":   GROK_MODEL,
+        }
+        return defaults.get(provider, OLLAMA_MODEL)
+
+    def _try_failover(self, text: str, history: list[dict]) -> Optional[str]:
+        """Attempt to use another provider if the primary is down."""
+        current = Provider(self.settings.provider)
+        fallback_order = [p for p in Provider if p != current]
+
+        for fallback_provider in fallback_order:
+            backend = self._backends[fallback_provider]
+            if backend.health_check():
+                logger.info("Failing over to %s", fallback_provider.value)
+                try:
+                    # Temporarily use fallback settings
+                    temp_settings = BrainSettings(
+                        provider=fallback_provider.value,
+                        model=self._default_model_for(fallback_provider.value),
+                        temperature=self.settings.temperature,
+                        top_p=self.settings.top_p,
+                        max_tokens=self.settings.max_tokens,
+                        timeout=self.settings.timeout,
+                        system_prompt=self.settings.system_prompt,
+                    )
+                    response = backend.generate(temp_settings, text, history)
+                    return f"[Failover → {fallback_provider.value}] {response}"
+                except Exception as e:
+                    logger.warning("Failover to %s failed: %s", fallback_provider.value, e)
+                    continue
+
+        return None
