@@ -116,10 +116,7 @@ def main():
 
             threading.Thread(target=process, daemon=True).start()
 
-        # Connect voice commands (no visual terminal input anymore)
-        listener.command_received.connect(on_command_input, Qt.ConnectionType.QueuedConnection)
-
-        # Connect voice commands
+        # Connect voice commands to orchestrator (SINGLE connection)
         listener.command_received.connect(on_command_input, Qt.ConnectionType.QueuedConnection)
 
         # TTS audio playback
