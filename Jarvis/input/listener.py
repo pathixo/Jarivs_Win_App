@@ -93,11 +93,36 @@ class Listener(QObject):
             self._stream = None
 
     def _preload_model(self):
-        """No longer needed — model loads in subprocess worker."""
-        print("STT engine: subprocess isolation mode (crash-safe)")
+        """Start persistent transcription worker subprocess."""
+        import subprocess
+        worker_path = os.path.join(os.path.dirname(__file__), "transcribe_worker.py")
+        print("[STT] Starting persistent worker...")
+        try:
+            self._worker = subprocess.Popen(
+                [sys.executable, worker_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            # Wait for "ready" signal
+            import json
+            ready_line = self._worker.stdout.readline().strip()
+            if ready_line:
+                data = json.loads(ready_line)
+                print(f"[STT] Worker ready (model loaded in {data.get('load_time', '?')}s)")
+            else:
+                print("[STT] Warning: worker didn't send ready signal")
+        except Exception as e:
+            print(f"[STT] Worker start error: {e}")
+            self._worker = None
 
     def _transcribe(self, frames):
-        """Save audio to WAV and transcribe via isolated subprocess."""
+        """Save audio to WAV and transcribe via persistent worker."""
+        import json
+        t_start = time.time()
         filename = os.path.join(os.path.dirname(__file__), "command.wav")
 
         try:
@@ -111,49 +136,51 @@ class Listener(QObject):
             wf.setframerate(self.RATE)
             wf.writeframes(b''.join(frames))
             wf.close()
-            print(f"Saved WAV: {os.path.getsize(filename)} bytes")
+            t_save = time.time()
+            print(f"[STT] WAV saved ({os.path.getsize(filename)} bytes, {t_save - t_start:.2f}s)")
         except Exception as e:
-            print(f"WAV save error: {e}")
+            print(f"[STT] WAV save error: {e}")
             return
 
-        try:
-            import subprocess
-            import json
-
-            # Run transcription in isolated subprocess
-            worker_path = os.path.join(os.path.dirname(__file__), "transcribe_worker.py")
-            print("Transcribing (subprocess)...")
-            result = subprocess.run(
-                [sys.executable, worker_path, filename],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-
-            if result.returncode != 0:
-                print(f"Transcribe worker error: {result.stderr}")
+        # Send to persistent worker
+        if not hasattr(self, '_worker') or self._worker is None or self._worker.poll() is not None:
+            print("[STT] Worker not running, restarting...")
+            self._preload_model()
+            if self._worker is None:
                 return
 
-            data = json.loads(result.stdout.strip())
+        try:
+            print("[STT] Transcribing...")
+            self._worker.stdin.write(filename + "\n")
+            self._worker.stdin.flush()
+
+            result_line = self._worker.stdout.readline().strip()
+            t_transcribe = time.time()
+
+            if not result_line:
+                print("[STT] Empty response from worker")
+                return
+
+            data = json.loads(result_line)
             if data.get("error"):
-                print(f"STT Error: {data['error']}")
+                print(f"[STT] Error: {data['error']}")
                 return
 
             text = data.get("text", "").strip()
-            print(f"Transcribed: '{text}'")
+            stt_time = data.get("time", 0)
+            total = t_transcribe - t_start
+            print(f"[STT] '{text}' (stt={stt_time}s, total={total:.2f}s)")
 
             if text and len(text) > 2:
                 print(f">>> COMMAND: {text}")
                 self.command_received.emit(text)
             else:
-                print(f"Filtered: '{text}'")
+                print(f"[STT] Filtered: '{text}'")
 
-        except subprocess.TimeoutExpired:
-            print("STT timeout (30s)")
         except Exception as e:
-            print(f"STT Error: {e}")
+            print(f"[STT] Error: {e}")
             logging.error(f"STT Error: {e}", exc_info=True)
+
 
 
     def _listen_loop(self):

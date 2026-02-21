@@ -98,18 +98,30 @@ def main():
 
         def on_command_input(command_text):
             """Handle commands from terminal or voice."""
-            window.append_terminal_output(f"Processing: {command_text}")
+            print(f"\n{'='*50}")
+            print(f"[CMD] Received: {command_text}")
 
             def process():
                 try:
+                    import time as _t
+                    t0 = _t.time()
+                    print(f"[LLM] Processing...")
                     response = orchestrator.process_command(command_text)
+                    t1 = _t.time()
+                    print(f"[LLM] Response in {t1-t0:.2f}s: {response[:100]}...")
+                    
                     # Show in terminal
                     worker.output_ready.emit(f"Response: {response}")
-                    # Only TTS the actual AI response — NOT terminal echoes
+                    
+                    # TTS
                     if response and not response.startswith("Error"):
-                        # Pause listener before speaking
                         listener.set_processing(True)
+                        print(f"[TTS] Speaking...")
                         tts.speak(response)
+                        t2 = _t.time()
+                        print(f"[TTS] Audio generated in {t2-t1:.2f}s")
+                    print(f"[TOTAL] {_t.time()-t0:.2f}s")
+                    print(f"{'='*50}")
                 except Exception as e:
                     logging.error(f"Process Error: {e}", exc_info=True)
                     worker.output_ready.emit(f"Error: {e}")
