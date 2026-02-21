@@ -13,6 +13,7 @@ Features:
   - Safety-aware shell execution with sandboxing
   - Conversation context awareness
   - Proper error handling and logging
+  - Colorized terminal output
   - Output formatting for TTS compatibility
 """
 
@@ -24,6 +25,7 @@ from typing import Optional
 
 from Jarvis.core.brain import Brain, Provider
 from Jarvis.core.tools import Tools
+from Jarvis.core import colors as clr
 
 logger = logging.getLogger("jarvis.orchestrator")
 
@@ -87,27 +89,36 @@ class Orchestrator:
             return ""
 
         logger.info("Processing command: %s", command_text[:80])
-        print(f"\n> {command_text}")
+        print()
+        print(clr.divider())
+        clr.print_user(command_text)
 
         try:
             # 1. Meta-commands: "llm ..." or "brain ..."
             if re.search(r"^(llm|brain)\b", command_text, re.IGNORECASE):
-                return self._handle_meta_command(command_text)
+                result = self._handle_meta_command(command_text)
+                print(clr.info(result))
+                return result
 
             # 2. Memory commands
             if re.search(r"^(clear memory|forget|reset memory)$", command_text, re.IGNORECASE):
-                return self.brain.clear_memory()
+                result = self.brain.clear_memory()
+                print(clr.info(result))
+                return result
 
             # 3. Direct shell command detection
             shell_cmd = self._detect_shell_command(command_text)
             if shell_cmd:
-                return self._execute_shell(shell_cmd)
+                clr.print_shell(shell_cmd)
+                result = self._execute_shell(shell_cmd)
+                return result
 
             # 4. Route to Brain (LLM) for everything else
             return self._process_with_llm(command_text)
 
         except Exception as e:
             logger.error("Command processing failed: %s", e, exc_info=True)
+            clr.print_error(str(e))
             return f"Error processing command: {e}"
 
     # ── Intent Detection ────────────────────────────────────────────────────
@@ -134,12 +145,15 @@ class Orchestrator:
         Send to Brain, parse response, execute any [SHELL] commands found.
         """
         t0 = time.time()
+        clr.print_debug(f"  Thinking...")
         llm_response = self.brain.generate_response(command_text)
         elapsed = time.time() - t0
+        clr.print_debug(f"  Response in {elapsed:.2f}s")
 
         logger.info("LLM responded in %.2fs (%d chars)", elapsed, len(llm_response))
 
         if not llm_response:
+            clr.print_error("No response received.")
             return "I didn't get a response. Please try again."
 
         # Check for [SHELL] commands in the response
@@ -147,6 +161,7 @@ class Orchestrator:
 
         if not shell_commands:
             # Pure conversational response
+            clr.print_ai(llm_response)
             return llm_response
 
         # Extract the conversational part (text outside [SHELL] tags)
@@ -154,6 +169,7 @@ class Orchestrator:
 
         results = []
         if clean_text:
+            clr.print_ai(clean_text)
             results.append(clean_text)
 
         for cmd in shell_commands:
@@ -164,11 +180,13 @@ class Orchestrator:
             # Safety check
             if self._is_dangerous_command(cmd):
                 logger.warning("Dangerous command blocked: %s", cmd)
-                results.append(f"⚠️ Blocked dangerous command: `{cmd}`. Please run this manually if intended.")
+                msg = f"Blocked dangerous command: `{cmd}`. Please run manually if intended."
+                clr.print_warning(f"⚠️  {msg}")
+                results.append(msg)
                 continue
 
             logger.info("Executing LLM-generated shell command: %s", cmd)
-            print(f"[EXEC] {cmd}")
+            clr.print_shell(cmd)
 
             shell_output = self._execute_shell(cmd, from_llm=True)
             if shell_output and shell_output != "Command executed.":
@@ -212,8 +230,10 @@ class Orchestrator:
 
             if not final_out:
                 final_out = "Command executed."
-
-            print(final_out)
+                clr.print_info("Command executed.")
+            else:
+                # Print output with shell output color
+                clr.print_shell_output(final_out)
 
             # Truncate for TTS if needed
             if len(final_out) > MAX_OUTPUT_LENGTH:
@@ -222,12 +242,17 @@ class Orchestrator:
             return final_out
 
         except subprocess.TimeoutExpired:
+            msg = "Command timed out after 30 seconds."
             logger.warning("Shell command timed out: %s", command)
-            return "Command timed out after 30 seconds."
+            clr.print_warning(msg)
+            return msg
         except FileNotFoundError:
-            return "Error: PowerShell not found. Is it installed?"
+            msg = "Error: PowerShell not found. Is it installed?"
+            clr.print_error(msg)
+            return msg
         except Exception as e:
             logger.error("Shell execution error: %s", e)
+            clr.print_error(f"Shell Error: {e}")
             return f"Shell Error: {e}"
 
     # ── Safety ──────────────────────────────────────────────────────────────
@@ -260,12 +285,12 @@ class Orchestrator:
         """Handle llm/brain configuration commands."""
 
         help_text = (
-            "🧠 Brain Controls:\n"
+            "Brain Controls:\n"
             "─────────────────────────────────────\n"
             "  llm status           — Show current config & health\n"
             "  llm models           — List available models\n"
             "  llm use <model>      — Switch model\n"
-            "  llm provider <name>  — Switch provider (ollama/gemini/grok)\n"
+            "  llm provider <name>  — Switch provider (ollama/gemini/groq/grok)\n"
             "  llm set temperature <0..2>\n"
             "  llm set top_p <0..1>\n"
             "  llm set max_tokens <int>\n"
@@ -283,10 +308,10 @@ class Orchestrator:
         # Status
         if re.search(r"^(llm|brain)\s+status$", command_text, re.IGNORECASE):
             status = self.brain.get_status()
-            health_icon = "🟢" if status["health"] == "connected" else "🔴"
+            health_icon = "+" if status["health"] == "connected" else "x"
             return (
-                "🧠 Brain Status:\n"
-                f"  {health_icon} Health:     {status['health']}\n"
+                "Brain Status:\n"
+                f"  [{health_icon}] Health:     {status['health']}\n"
                 f"  Provider:    {status['provider']}\n"
                 f"  Model:       {status['model']}\n"
                 f"  Temperature: {status['temperature']}\n"
@@ -301,10 +326,10 @@ class Orchestrator:
         if re.search(r"^(llm|brain)\s+models$", command_text, re.IGNORECASE):
             ok, result = self.brain.list_local_models()
             if not ok:
-                return f"❌ {result}"
+                return f"Error: {result}"
             if not result:
                 return "No models found for current provider."
-            return "Available models:\n  • " + "\n  • ".join(result)
+            return "Available models:\n  - " + "\n  - ".join(result)
 
         # Switch provider
         provider_match = re.search(
@@ -313,14 +338,14 @@ class Orchestrator:
         if provider_match:
             provider_name = provider_match.group(2).strip()
             ok, message = self.brain.set_provider(provider_name)
-            return f"{'✅' if ok else '❌'} {message}"
+            return message
 
         # Switch model
         use_match = re.search(r"^(llm|brain)\s+use\s+(.+)$", command_text, re.IGNORECASE)
         if use_match:
             model_name = use_match.group(2).strip()
             ok, message = self.brain.set_model(model_name)
-            return f"{'✅' if ok else '❌'} {message}"
+            return message
 
         # Set option
         set_match = re.search(
@@ -331,11 +356,11 @@ class Orchestrator:
             option_name = set_match.group(2).strip().lower()
             raw_value = set_match.group(3).strip()
             ok, message = self.brain.set_option(option_name, raw_value)
-            return f"{'✅' if ok else '❌'} {message}"
+            return message
 
         # Show system prompt
         if re.search(r"^(llm|brain)\s+prompt\s+show$", command_text, re.IGNORECASE):
-            return f"📋 System Prompt:\n\n{self.brain.settings.system_prompt}"
+            return f"System Prompt:\n\n{self.brain.settings.system_prompt}"
 
         # Set system prompt
         prompt_match = re.search(
@@ -344,11 +369,11 @@ class Orchestrator:
         if prompt_match:
             prompt_text = prompt_match.group(2)
             ok, message = self.brain.set_system_prompt(prompt_text)
-            return f"{'✅' if ok else '❌'} {message}"
+            return message
 
         # Reset
         if re.search(r"^(llm|brain)\s+reset$", command_text, re.IGNORECASE):
-            return f"♻️ {self.brain.reset_settings()}"
+            return self.brain.reset_settings()
 
         # Unknown subcommand → show help
         return help_text
