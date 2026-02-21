@@ -4,16 +4,16 @@ Brain Module — Multi-Provider LLM Interface Layer
 Provides a unified interface to multiple LLM backends:
   - Ollama  (local, default)
   - Gemini  (Google Cloud)
+  - Groq    (Groq Cloud — fast inference)
   - Grok    (xAI Cloud)
 
 Supports conversation memory, chain-of-thought reasoning, retry logic,
 provider failover, and structured settings management.
 """
 
-import json
 import logging
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -24,6 +24,8 @@ from Jarvis.config import (
     OLLAMA_MODEL,
     GEMINI_API_KEY,
     GEMINI_MODEL,
+    GROQ_API_KEY,
+    GROQ_MODEL,
     GROK_API_KEY,
     GROK_MODEL,
     LLM_PROVIDER,
@@ -37,6 +39,7 @@ logger = logging.getLogger("jarvis.brain")
 class Provider(str, Enum):
     OLLAMA = "ollama"
     GEMINI = "gemini"
+    GROQ   = "groq"
     GROK   = "grok"
 
 
@@ -232,6 +235,14 @@ class _GeminiBackend:
         }
 
         resp = requests.post(url, json=payload, timeout=settings.timeout)
+
+        # Handle rate limiting with retry-after
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 5))
+            logger.warning("Gemini rate limited, waiting %ds...", retry_after)
+            time.sleep(min(retry_after, 10))  # Wait up to 10s
+            resp = requests.post(url, json=payload, timeout=settings.timeout)
+
         resp.raise_for_status()
 
         data = resp.json()
@@ -265,6 +276,74 @@ class _GeminiBackend:
             return True, names
         except Exception as e:
             return False, f"Could not fetch Gemini models: {e}"
+
+
+class _GroqBackend:
+    """Groq Cloud via OpenAI-compatible REST API (fast inference)."""
+
+    BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+
+    def generate(self, settings: BrainSettings, prompt: str, history: list[dict]) -> str:
+        if not self._api_key:
+            raise ValueError("Groq API key not configured. Set GROQ_API_KEY in .env")
+
+        model = settings.model if settings.provider == "groq" else GROQ_MODEL
+
+        messages = [{"role": "system", "content": settings.system_prompt}]
+
+        for msg in history[-8:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": settings.temperature,
+            "top_p": settings.top_p,
+            "max_tokens": settings.max_tokens,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        resp = requests.post(self.BASE_URL, json=payload, headers=headers, timeout=settings.timeout)
+        resp.raise_for_status()
+
+        data = resp.json()
+        choices = data.get("choices", [])
+        if not choices:
+            raise ValueError(f"Groq returned no choices: {data}")
+
+        return choices[0].get("message", {}).get("content", "")
+
+    def health_check(self) -> bool:
+        if not self._api_key:
+            return False
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def list_models(self) -> tuple[bool, list[str] | str]:
+        if not self._api_key:
+            return False, "Groq API key not configured."
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+            r.raise_for_status()
+            models = r.json().get("data", [])
+            names = [m.get("id", "") for m in models]
+            return True, names
+        except Exception as e:
+            return False, f"Could not fetch Groq models: {e}"
 
 
 class _GrokBackend:
@@ -343,7 +422,7 @@ class Brain:
     conversation memory, retry logic, and provider failover.
     """
 
-    MAX_RETRIES = 2
+    MAX_RETRIES = 3
     RETRY_DELAY = 1.0  # seconds
 
     def __init__(self, provider: Optional[str] = None):
@@ -357,6 +436,7 @@ class Brain:
         self._backends = {
             Provider.OLLAMA: _OllamaBackend(OLLAMA_URL),
             Provider.GEMINI: _GeminiBackend(GEMINI_API_KEY),
+            Provider.GROQ:   _GroqBackend(GROQ_API_KEY),
             Provider.GROK:   _GrokBackend(GROK_API_KEY),
         }
 
@@ -402,7 +482,7 @@ class Brain:
             except requests.exceptions.ConnectionError:
                 logger.warning("Connection failed (attempt %d/%d)", attempt, self.MAX_RETRIES)
                 if attempt < self.MAX_RETRIES:
-                    time.sleep(self.RETRY_DELAY)
+                    time.sleep(self.RETRY_DELAY * attempt)  # exponential-ish backoff
                     continue
                 # Try failover
                 fallback = self._try_failover(text.strip(), conv_history)
@@ -418,8 +498,27 @@ class Brain:
                 return f"Error: {self.settings.provider} LLM timed out after {self.settings.timeout}s."
 
             except requests.exceptions.HTTPError as e:
-                logger.error("HTTP error: %s", e)
-                return f"Error: LLM returned HTTP {e.response.status_code if e.response else 'unknown'}."
+                status = e.response.status_code if e.response is not None else 0
+                logger.error("HTTP error %d: %s", status, e)
+
+                # Rate limit — retry with backoff
+                if status == 429:
+                    wait = min(self.RETRY_DELAY * (2 ** attempt), 15)
+                    logger.warning("Rate limited (429), waiting %.1fs (attempt %d/%d)", wait, attempt, self.MAX_RETRIES)
+                    if attempt < self.MAX_RETRIES:
+                        time.sleep(wait)
+                        continue
+                    # Last resort: try failover to another provider
+                    fallback = self._try_failover(text.strip(), conv_history)
+                    if fallback:
+                        return fallback
+                    return f"Error: {self.settings.provider} rate limited. Try again in a minute or switch provider with 'llm provider groq'."
+
+                # Auth error
+                if status in (401, 403):
+                    return f"Error: {self.settings.provider} API key is invalid or expired. Check your .env file."
+
+                return f"Error: {self.settings.provider} returned HTTP {status}."
 
             except ValueError as e:
                 logger.error("Value error: %s", e)
@@ -444,10 +543,15 @@ class Brain:
             return False, f"Unknown provider '{provider_name}'. Valid: {valid}"
 
         # Validate API key for cloud providers
-        if provider == Provider.GEMINI and not GEMINI_API_KEY:
-            return False, "Cannot switch to Gemini: GEMINI_API_KEY not set in .env"
-        if provider == Provider.GROK and not GROK_API_KEY:
-            return False, "Cannot switch to Grok: GROK_API_KEY not set in .env"
+        key_map = {
+            Provider.GEMINI: (GEMINI_API_KEY, "GEMINI_API_KEY"),
+            Provider.GROQ:   (GROQ_API_KEY, "GROQ_API_KEY"),
+            Provider.GROK:   (GROK_API_KEY, "GROK_API_KEY"),
+        }
+        if provider in key_map:
+            api_key, env_name = key_map[provider]
+            if not api_key:
+                return False, f"Cannot switch to {provider.value}: {env_name} not set in .env"
 
         old_provider = self.settings.provider
         self.settings.provider = provider.value
@@ -551,6 +655,7 @@ class Brain:
         defaults = {
             "ollama": OLLAMA_MODEL,
             "gemini": GEMINI_MODEL,
+            "groq":   GROQ_MODEL,
             "grok":   GROK_MODEL,
         }
         return defaults.get(provider, OLLAMA_MODEL)

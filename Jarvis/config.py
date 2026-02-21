@@ -24,7 +24,7 @@ def get_app_data_path():
 load_dotenv()
 
 # ─────────────────────── LLM Provider Config ────────────────────────────────
-# Active provider: "ollama" (local, default) | "gemini" (Google) | "grok" (xAI)
+# Active provider: "ollama" | "gemini" | "groq" | "grok"
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 
 # Ollama Configuration (Local Brain)
@@ -34,6 +34,10 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma:2b")
 # Gemini Configuration (Google Cloud)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+# Groq Configuration (Groq Cloud — fast inference)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # Grok Configuration (xAI Cloud)
 GROK_API_KEY = os.getenv("GROK_API_KEY", "")
