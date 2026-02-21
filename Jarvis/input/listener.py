@@ -1,3 +1,4 @@
+import sys
 import threading
 import pyaudio
 import wave
@@ -92,17 +93,95 @@ class Listener(QObject):
             self._stream = None
 
     def _preload_model(self):
+        """Start persistent transcription worker subprocess."""
+        import subprocess
+        worker_path = os.path.join(os.path.dirname(__file__), "transcribe_worker.py")
+        print("[STT] Starting persistent worker...")
         try:
-            with self.model_lock:
-                if self.model:
-                    return
-                print("Loading Whisper model...")
-                from faster_whisper import WhisperModel
-                self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
-                print("Whisper model ready.")
+            self._worker = subprocess.Popen(
+                [sys.executable, worker_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            # Wait for "ready" signal
+            import json
+            ready_line = self._worker.stdout.readline().strip()
+            if ready_line:
+                data = json.loads(ready_line)
+                print(f"[STT] Worker ready (model loaded in {data.get('load_time', '?')}s)")
+            else:
+                print("[STT] Warning: worker didn't send ready signal")
         except Exception as e:
-            print(f"Model load error: {e}")
-            logging.error(f"Model Preload Error: {e}", exc_info=True)
+            print(f"[STT] Worker start error: {e}")
+            self._worker = None
+
+    def _transcribe(self, frames):
+        """Save audio to WAV and transcribe via persistent worker."""
+        import json
+        t_start = time.time()
+        filename = os.path.join(os.path.dirname(__file__), "command.wav")
+
+        try:
+            pa = pyaudio.PyAudio()
+            sample_width = pa.get_sample_size(self.FORMAT)
+            pa.terminate()
+
+            wf = wave.open(filename, 'wb')
+            wf.setnchannels(self.CHANNELS)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(self.RATE)
+            wf.writeframes(b''.join(frames))
+            wf.close()
+            t_save = time.time()
+            print(f"[STT] WAV saved ({os.path.getsize(filename)} bytes, {t_save - t_start:.2f}s)")
+        except Exception as e:
+            print(f"[STT] WAV save error: {e}")
+            return
+
+        # Send to persistent worker
+        if not hasattr(self, '_worker') or self._worker is None or self._worker.poll() is not None:
+            print("[STT] Worker not running, restarting...")
+            self._preload_model()
+            if self._worker is None:
+                return
+
+        try:
+            print("[STT] Transcribing...")
+            self._worker.stdin.write(filename + "\n")
+            self._worker.stdin.flush()
+
+            result_line = self._worker.stdout.readline().strip()
+            t_transcribe = time.time()
+
+            if not result_line:
+                print("[STT] Empty response from worker")
+                return
+
+            data = json.loads(result_line)
+            if data.get("error"):
+                print(f"[STT] Error: {data['error']}")
+                return
+
+            text = data.get("text", "").strip()
+            stt_time = data.get("time", 0)
+            total = t_transcribe - t_start
+            print(f"[STT] '{text}' (stt={stt_time}s, total={total:.2f}s)")
+
+            if text and len(text) > 2:
+                print(f">>> COMMAND: {text}")
+                self.command_received.emit(text)
+            else:
+                print(f"[STT] Filtered: '{text}'")
+
+        except Exception as e:
+            print(f"[STT] Error: {e}")
+            logging.error(f"STT Error: {e}", exc_info=True)
+
+
 
     def _listen_loop(self):
         try:
@@ -205,47 +284,3 @@ class Listener(QObject):
             return None
 
         return frames
-
-    def _transcribe(self, frames):
-        """Save audio to WAV and transcribe with Whisper."""
-        filename = os.path.join(os.path.dirname(__file__), "command.wav")
-
-        try:
-            pa = pyaudio.PyAudio()
-            sample_width = pa.get_sample_size(self.FORMAT)
-            pa.terminate()
-
-            wf = wave.open(filename, 'wb')
-            wf.setnchannels(self.CHANNELS)
-            wf.setsampwidth(sample_width)
-            wf.setframerate(self.RATE)
-            wf.writeframes(b''.join(frames))
-            wf.close()
-            print(f"Saved WAV: {os.path.getsize(filename)} bytes")
-        except Exception as e:
-            print(f"WAV save error: {e}")
-            return
-
-        try:
-            with self.model_lock:
-                if not self.model:
-                    print("Loading Whisper model on demand...")
-                    from faster_whisper import WhisperModel
-                    self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
-
-            print("Transcribing...")
-            segments, info = self.model.transcribe(filename, beam_size=1, language="en")
-            segments_list = list(segments)
-            text = " ".join([s.text for s in segments_list]).strip()
-
-            print(f"Transcribed: '{text}' ({len(segments_list)} segments)")
-
-            if text and len(text) > 2:
-                print(f">>> COMMAND: {text}")
-                self.command_received.emit(text)
-            else:
-                print(f"Filtered: '{text}'")
-
-        except Exception as e:
-            print(f"STT Error: {e}")
-            logging.error(f"STT Error: {e}", exc_info=True)

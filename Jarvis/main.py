@@ -4,6 +4,12 @@ import threading
 import logging
 import traceback
 
+# Add parent directory to sys.path FIRST (before any Jarvis imports)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
 # Setup Logging
 from Jarvis.config import LOGS_DIR
 log_file = os.path.join(LOGS_DIR, "crash.log")
@@ -21,11 +27,6 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
 
 sys.excepthook = handle_exception
-
-# Add parent directory to sys.path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal, Qt
@@ -97,28 +98,37 @@ def main():
 
         def on_command_input(command_text):
             """Handle commands from terminal or voice."""
-            window.append_terminal_output(f"Processing: {command_text}")
+            print(f"\n{'='*50}")
+            print(f"[CMD] Received: {command_text}")
 
             def process():
                 try:
+                    import time as _t
+                    t0 = _t.time()
+                    print(f"[LLM] Processing...")
                     response = orchestrator.process_command(command_text)
+                    t1 = _t.time()
+                    print(f"[LLM] Response in {t1-t0:.2f}s: {response[:100]}...")
+                    
                     # Show in terminal
                     worker.output_ready.emit(f"Response: {response}")
-                    # Only TTS the actual AI response — NOT terminal echoes
+                    
+                    # TTS
                     if response and not response.startswith("Error"):
-                        # Pause listener before speaking
                         listener.set_processing(True)
+                        print(f"[TTS] Speaking...")
                         tts.speak(response)
+                        t2 = _t.time()
+                        print(f"[TTS] Audio generated in {t2-t1:.2f}s")
+                    print(f"[TOTAL] {_t.time()-t0:.2f}s")
+                    print(f"{'='*50}")
                 except Exception as e:
                     logging.error(f"Process Error: {e}", exc_info=True)
                     worker.output_ready.emit(f"Error: {e}")
 
             threading.Thread(target=process, daemon=True).start()
 
-        # Connect voice commands (no visual terminal input anymore)
-        listener.command_received.connect(on_command_input, Qt.ConnectionType.QueuedConnection)
-
-        # Connect voice commands
+        # Connect voice commands to orchestrator (SINGLE connection)
         listener.command_received.connect(on_command_input, Qt.ConnectionType.QueuedConnection)
 
         # TTS audio playback
