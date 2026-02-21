@@ -1,3 +1,4 @@
+import sys
 import threading
 import pyaudio
 import wave
@@ -92,17 +93,68 @@ class Listener(QObject):
             self._stream = None
 
     def _preload_model(self):
+        """No longer needed — model loads in subprocess worker."""
+        print("STT engine: subprocess isolation mode (crash-safe)")
+
+    def _transcribe(self, frames):
+        """Save audio to WAV and transcribe via isolated subprocess."""
+        filename = os.path.join(os.path.dirname(__file__), "command.wav")
+
         try:
-            with self.model_lock:
-                if self.model:
-                    return
-                print("Loading Whisper model...")
-                from faster_whisper import WhisperModel
-                self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
-                print("Whisper model ready.")
+            pa = pyaudio.PyAudio()
+            sample_width = pa.get_sample_size(self.FORMAT)
+            pa.terminate()
+
+            wf = wave.open(filename, 'wb')
+            wf.setnchannels(self.CHANNELS)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(self.RATE)
+            wf.writeframes(b''.join(frames))
+            wf.close()
+            print(f"Saved WAV: {os.path.getsize(filename)} bytes")
         except Exception as e:
-            print(f"Model load error: {e}")
-            logging.error(f"Model Preload Error: {e}", exc_info=True)
+            print(f"WAV save error: {e}")
+            return
+
+        try:
+            import subprocess
+            import json
+
+            # Run transcription in isolated subprocess
+            worker_path = os.path.join(os.path.dirname(__file__), "transcribe_worker.py")
+            print("Transcribing (subprocess)...")
+            result = subprocess.run(
+                [sys.executable, worker_path, filename],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+
+            if result.returncode != 0:
+                print(f"Transcribe worker error: {result.stderr}")
+                return
+
+            data = json.loads(result.stdout.strip())
+            if data.get("error"):
+                print(f"STT Error: {data['error']}")
+                return
+
+            text = data.get("text", "").strip()
+            print(f"Transcribed: '{text}'")
+
+            if text and len(text) > 2:
+                print(f">>> COMMAND: {text}")
+                self.command_received.emit(text)
+            else:
+                print(f"Filtered: '{text}'")
+
+        except subprocess.TimeoutExpired:
+            print("STT timeout (30s)")
+        except Exception as e:
+            print(f"STT Error: {e}")
+            logging.error(f"STT Error: {e}", exc_info=True)
+
 
     def _listen_loop(self):
         try:
@@ -205,47 +257,3 @@ class Listener(QObject):
             return None
 
         return frames
-
-    def _transcribe(self, frames):
-        """Save audio to WAV and transcribe with Whisper."""
-        filename = os.path.join(os.path.dirname(__file__), "command.wav")
-
-        try:
-            pa = pyaudio.PyAudio()
-            sample_width = pa.get_sample_size(self.FORMAT)
-            pa.terminate()
-
-            wf = wave.open(filename, 'wb')
-            wf.setnchannels(self.CHANNELS)
-            wf.setsampwidth(sample_width)
-            wf.setframerate(self.RATE)
-            wf.writeframes(b''.join(frames))
-            wf.close()
-            print(f"Saved WAV: {os.path.getsize(filename)} bytes")
-        except Exception as e:
-            print(f"WAV save error: {e}")
-            return
-
-        try:
-            with self.model_lock:
-                if not self.model:
-                    print("Loading Whisper model on demand...")
-                    from faster_whisper import WhisperModel
-                    self.model = WhisperModel("tiny", device="cpu", compute_type="int8")
-
-            print("Transcribing...")
-            segments, info = self.model.transcribe(filename, beam_size=1, language="en")
-            segments_list = list(segments)
-            text = " ".join([s.text for s in segments_list]).strip()
-
-            print(f"Transcribed: '{text}' ({len(segments_list)} segments)")
-
-            if text and len(text) > 2:
-                print(f">>> COMMAND: {text}")
-                self.command_received.emit(text)
-            else:
-                print(f"Filtered: '{text}'")
-
-        except Exception as e:
-            print(f"STT Error: {e}")
-            logging.error(f"STT Error: {e}", exc_info=True)
