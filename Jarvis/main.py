@@ -34,6 +34,7 @@ from PyQt6.QtMultimedia import QMediaPlayer
 from Jarvis.ui.window import MainWindow
 from Jarvis.ui.tray import JarvisTrayIcon
 from Jarvis.core.orchestrator import Orchestrator
+from Jarvis.core import colors as clr
 from Jarvis.output.tts import TTS
 from Jarvis.input.listener import Listener
 
@@ -98,17 +99,13 @@ def main():
 
         def on_command_input(command_text):
             """Handle commands from terminal or voice."""
-            print(f"\n{'='*50}")
-            print(f"[CMD] Received: {command_text}")
 
             def process():
                 try:
                     import time as _t
                     t0 = _t.time()
-                    print(f"[LLM] Processing...")
                     response = orchestrator.process_command(command_text)
                     t1 = _t.time()
-                    print(f"[LLM] Response in {t1-t0:.2f}s: {response[:100]}...")
                     
                     # Show in terminal
                     worker.output_ready.emit(f"Response: {response}")
@@ -116,14 +113,15 @@ def main():
                     # TTS
                     if response and not response.startswith("Error"):
                         listener.set_processing(True)
-                        print(f"[TTS] Speaking...")
+                        clr.print_debug(f"  TTS generating...")
                         tts.speak(response)
                         t2 = _t.time()
-                        print(f"[TTS] Audio generated in {t2-t1:.2f}s")
-                    print(f"[TOTAL] {_t.time()-t0:.2f}s")
-                    print(f"{'='*50}")
+                        clr.print_debug(f"  TTS ready in {t2-t1:.2f}s")
+                    clr.print_debug(f"  Total: {_t.time()-t0:.2f}s")
+                    print(clr.divider())
                 except Exception as e:
                     logging.error(f"Process Error: {e}", exc_info=True)
+                    clr.print_error(str(e))
                     worker.output_ready.emit(f"Error: {e}")
 
             threading.Thread(target=process, daemon=True).start()

@@ -7,5 +7,5 @@ edge-tts
 sounddevice
 numpy
 python-dotenv
-termcolor
+colorama
 pyaudio
