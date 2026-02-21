@@ -1,0 +1,5 @@
+2026-02-21 20:03:48,869 - ERROR - Process Error: [Errno 22] Invalid argument
+Traceback (most recent call last):
+  File "D:\Coding\Projects\Antigravity\Jarvis\main.py", line 111, in process
+    print(f"[LLM] Response in {t1-t0:.2f}s: {response[:100]}...")
+OSError: [Errno 22] Invalid argument
