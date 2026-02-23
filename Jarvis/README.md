@@ -11,8 +11,9 @@
 
 | File | Class | Purpose |
 |---|---|---|
-| `brain.py` | `Brain` | Multi-provider LLM interface. Manages conversation memory, retries, failover, and settings. Supports Groq, Gemini, Grok, and Ollama backends. |
-| `orchestrator.py` | `Orchestrator` | Command router. Classifies user input into shell commands, meta-commands, or LLM queries. Handles `[SHELL]` tag extraction and safe execution. |
+| `brain.py` | `Brain` | Multi-provider LLM interface. Manages conversation memory, retries, failover, and settings. Supports Groq, Gemini, Grok, and Ollama backends. Integrates with `PersonaManager` for persona-aware system prompts. |
+| `orchestrator.py` | `Orchestrator` | Command router. Classifies user input into shell commands, meta-commands, persona/voice commands, or LLM queries. Handles `[SHELL]` tag extraction and safe execution. |
+| `personas.py` | `PersonaManager` | Persona profile system. Defines `PersonaProfile` dataclass and 5 built-in personas (witty, professional, friendly, technical, comic). Manages active persona switching and custom registration. |
 | `tools.py` | `Tools` | Sandboxed file system operations. All paths are restricted to the `workspace/` directory. |
 | `colors.py` | *(functions)* | ANSI terminal color utilities. Semantic coloring for user input, AI responses, shell commands, errors, etc. Uses `colorama` for Windows support. |
 
@@ -28,7 +29,7 @@
 
 | File | Class | Purpose |
 |---|---|---|
-| `tts.py` | `TTS` | Text-to-speech via Edge-TTS. Generates MP3 audio files and emits `audio_generated` signal for playback. |
+| `tts.py` | `TTS` | Text-to-speech via Edge-TTS. Supports dynamic voice and rate switching per persona. Generates MP3 audio files and emits `audio_generated` signal for playback. |
 | `visuals.py` | `ThinkingOrb` | Animated circular widget showing system state (idle, listening, thinking, speaking). |
 
 ### `ui/` — Desktop Interface
@@ -42,8 +43,8 @@
 
 | File | Purpose |
 |---|---|
-| `main.py` | Application entry point. Wires Orchestrator, TTS, Listener, UI, and Tray together. Manages thread-safe signal routing. |
-| `config.py` | Environment variable loading via `python-dotenv`. Defines all configurable constants (API keys, model names, paths). |
+| `main.py` | Application entry point. Wires Orchestrator, TTS, Listener, UI, and Tray together. Passes TTS instance to Orchestrator for persona-driven voice switching. |
+| `config.py` | Environment variable loading via `python-dotenv`. Defines all configurable constants (API keys, model names, paths, `DEFAULT_PERSONA`). |
 
 ---
 
@@ -147,7 +148,12 @@ All cross-thread signals use `Qt.ConnectionType.QueuedConnection` for thread saf
 .venv\Scripts\python.exe -c "from Jarvis.core.brain import Brain; b = Brain(); print(b.generate_response('Hello'))"
 ```
 
-Tests use `unittest.mock.patch` to avoid real API calls. The Brain is fully mocked in `TestOrchestrator.setUp()`.
+Tests use `unittest.mock.patch` to avoid real API calls. The Brain and PersonaManager are fully mocked in `TestOrchestrator.setUp()`. Tests cover:
+- Command routing (shell vs LLM)
+- Meta-commands (`llm status`, `llm use`, etc.)
+- Persona commands (`persona list`, `persona set`, etc.)
+- Voice commands (`voice set`, `voice list`)
+- Safety checks (dangerous command blocking)
 
 ---
 
