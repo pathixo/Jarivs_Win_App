@@ -56,6 +56,7 @@ def main():
         # Don't show immediately if we want silent start, but generally show on launch
         window.show()
 
+        tts = TTS()
         orchestrator = Orchestrator(worker=worker)
 
         # Listener (fully autonomous)
