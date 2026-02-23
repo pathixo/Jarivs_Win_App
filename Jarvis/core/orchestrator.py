@@ -36,7 +36,7 @@ logger = logging.getLogger("jarvis.orchestrator")
 DIRECT_SHELL_PATTERNS = [
     # Common shell builtins / utilities (must START with the command)
     r"^(cls|dir|ls|cd|pwd|ipconfig|whoami|ping|echo|mkdir|rm|rmdir|del|copy|"
-    r"move|type|cat|ren|rename|attrib|tree|find|findstr|sort|more|fc|comp|xcopy|"
+    r"move|type|cat|ren|rename|attrib|tree|find|findstr|sort|more\s+\S+|fc|comp|xcopy|"
     r"tasklist|taskkill|systeminfo|hostname|netstat|nslookup|tracert|shutdown|"
     r"get-process|get-service|get-childitem|set-location|get-content|"
     r"select-object|where-object|format-table|format-list|out-file|"
@@ -69,10 +69,18 @@ class Orchestrator:
     Central command router. Owns Brain + Tools and handles all user input.
     """
 
-    def __init__(self, worker=None):
+    def __init__(self, worker=None, tts=None):
         self.brain = Brain()
         self.tools = Tools()
         self.worker = worker
+        self.tts = tts  # TTS instance for voice switching
+
+        # Apply initial persona voice to TTS
+        if self.tts:
+            active = self.brain.personas.get_active()
+            self.tts.set_voice(active.voice)
+            self.tts.set_rate(active.tts_rate)
+
         logger.info("Orchestrator initialized")
 
     # ── Main Entry Point ────────────────────────────────────────────────────
@@ -99,20 +107,32 @@ class Orchestrator:
                 print(clr.info(result))
                 return result
 
-            # 2. Memory commands
+            # 2. Persona commands: "persona ..."
+            if re.search(r"^persona\b", command_text, re.IGNORECASE):
+                result = self._handle_persona_command(command_text)
+                print(clr.info(result))
+                return result
+
+            # 3. Voice commands: "voice ..."
+            if re.search(r"^voice\b", command_text, re.IGNORECASE):
+                result = self._handle_voice_command(command_text)
+                print(clr.info(result))
+                return result
+
+            # 4. Memory commands
             if re.search(r"^(clear memory|forget|reset memory)$", command_text, re.IGNORECASE):
                 result = self.brain.clear_memory()
                 print(clr.info(result))
                 return result
 
-            # 3. Direct shell command detection
+            # 5. Direct shell command detection
             shell_cmd = self._detect_shell_command(command_text)
             if shell_cmd:
                 clr.print_shell(shell_cmd)
                 result = self._execute_shell(shell_cmd)
                 return result
 
-            # 4. Route to Brain (LLM) for everything else
+            # 6. Route to Brain (LLM) for everything else
             return self._process_with_llm(command_text)
 
         except Exception as e:
@@ -306,11 +326,14 @@ class Orchestrator:
         if re.search(r"^(llm|brain)\s+status$", command_text, re.IGNORECASE):
             status = self.brain.get_status()
             health_icon = "+" if status["health"] == "connected" else "x"
+            voice = self.tts.get_voice() if self.tts else "N/A"
             return (
                 "Brain Status:\n"
                 f"  [{health_icon}] Health:     {status['health']}\n"
                 f"  Provider:    {status['provider']}\n"
                 f"  Model:       {status['model']}\n"
+                f"  Persona:     {status['persona']}\n"
+                f"  Voice:       {voice}\n"
                 f"  Temperature: {status['temperature']}\n"
                 f"  Top-P:       {status['top_p']}\n"
                 f"  Max Tokens:  {status['max_tokens']}\n"
@@ -373,4 +396,119 @@ class Orchestrator:
             return self.brain.reset_settings()
 
         # Unknown subcommand → show help
+        return help_text
+
+    # ── Persona Commands ────────────────────────────────────────────────────
+
+    RECOMMENDED_VOICES = [
+        ("en-GB-RyanNeural", "British Male (witty default)"),
+        ("en-US-GuyNeural", "American Male (professional)"),
+        ("en-US-JennyNeural", "American Female (friendly)"),
+        ("en-US-AndrewNeural", "American Male (technical)"),
+        ("en-AU-WilliamNeural", "Australian Male (comic)"),
+        ("en-GB-SoniaNeural", "British Female"),
+        ("en-US-AriaNeural", "American Female"),
+        ("en-IN-NeerjaNeural", "Indian Female"),
+        ("en-IN-PrabhatNeural", "Indian Male"),
+    ]
+
+    def _handle_persona_command(self, command_text: str) -> str:
+        """Handle persona management commands."""
+
+        help_text = (
+            "Persona Controls:\n"
+            "-----------------------------------\n"
+            "  persona list        - List available personas\n"
+            "  persona set <name>  - Switch persona (also changes voice)\n"
+            "  persona status      - Show active persona\n"
+            "  persona reset       - Reset to default (witty)\n"
+        )
+
+        # persona help
+        if re.search(r"^persona\s+help$", command_text, re.IGNORECASE):
+            return help_text
+
+        # persona list
+        if re.search(r"^persona\s+list$", command_text, re.IGNORECASE):
+            personas = self.brain.personas.list_all()
+            active = self.brain.personas.get_active_name()
+            lines = ["Available Personas:"]
+            for p in personas:
+                marker = " <-" if p.name == active else ""
+                lines.append(f"  - {p.display_name} ({p.name}) - {p.description}{marker}")
+            return "\n".join(lines)
+
+        # persona set <name>
+        set_match = re.search(r"^persona\s+set\s+(.+)$", command_text, re.IGNORECASE)
+        if set_match:
+            name = set_match.group(1).strip()
+            ok, message, new_voice = self.brain.set_persona(name)
+            if ok and self.tts:
+                profile = self.brain.personas.get_active()
+                self.tts.set_voice(new_voice)
+                self.tts.set_rate(profile.tts_rate)
+            return message
+
+        # persona status
+        if re.search(r"^persona\s+status$", command_text, re.IGNORECASE):
+            profile = self.brain.personas.get_active()
+            voice = self.tts.get_voice() if self.tts else "N/A"
+            return (
+                f"Active Persona: {profile.display_name}\n"
+                f"  Voice:  {voice}\n"
+                f"  Style:  {profile.description}"
+            )
+
+        # persona reset
+        if re.search(r"^persona\s+reset$", command_text, re.IGNORECASE):
+            result = self.brain.personas.reset()
+            profile = self.brain.personas.get_active()
+            self.brain.settings.system_prompt = profile.system_prompt
+            if self.tts:
+                self.tts.set_voice(profile.voice)
+                self.tts.set_rate(profile.tts_rate)
+            return result
+
+        return help_text
+
+    def _handle_voice_command(self, command_text: str) -> str:
+        """Handle voice control commands."""
+
+        help_text = (
+            "Voice Controls:\n"
+            "-----------------------------------\n"
+            "  voice set <voice_id>  - Set TTS voice manually\n"
+            "  voice list            - Show recommended voices\n"
+            "  voice status          - Show current voice\n"
+        )
+
+        # voice help
+        if re.search(r"^voice\s+help$", command_text, re.IGNORECASE):
+            return help_text
+
+        # voice set <id>
+        set_match = re.search(r"^voice\s+set\s+(.+)$", command_text, re.IGNORECASE)
+        if set_match:
+            voice_id = set_match.group(1).strip()
+            if self.tts:
+                self.tts.set_voice(voice_id)
+                return f"Voice set to '{voice_id}'."
+            return "TTS not available."
+
+        # voice list
+        if re.search(r"^voice\s+list$", command_text, re.IGNORECASE):
+            current = self.tts.get_voice() if self.tts else ""
+            lines = ["Recommended Voices:"]
+            for vid, desc in self.RECOMMENDED_VOICES:
+                marker = " <-" if vid == current else ""
+                lines.append(f"  - {vid} - {desc}{marker}")
+            lines.append("\nTip: Use 'voice set <voice_id>' to change.")
+            return "\n".join(lines)
+
+        # voice status
+        if re.search(r"^voice\s+status$", command_text, re.IGNORECASE):
+            if self.tts:
+                return f"Current voice: {self.tts.get_voice()}"
+            return "TTS not available."
+
         return help_text

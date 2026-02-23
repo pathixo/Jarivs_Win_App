@@ -57,7 +57,7 @@ def main():
         window.show()
 
         tts = TTS()
-        orchestrator = Orchestrator(worker=worker)
+        orchestrator = Orchestrator(worker=worker, tts=tts)
 
         # Listener (fully autonomous)
         listener = Listener()

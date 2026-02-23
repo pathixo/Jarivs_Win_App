@@ -12,6 +12,20 @@ if project_root not in sys.path:
 from Jarvis.core.orchestrator import Orchestrator
 
 
+def _make_mock_persona(name="witty", display_name="Witty JARVIS",
+                       description="British wit", voice="en-GB-RyanNeural",
+                       tts_rate="+10%", system_prompt="You are Jarvis"):
+    """Create a mock PersonaProfile."""
+    p = MagicMock()
+    p.name = name
+    p.display_name = display_name
+    p.description = description
+    p.voice = voice
+    p.tts_rate = tts_rate
+    p.system_prompt = system_prompt
+    return p
+
+
 class TestOrchestrator(unittest.TestCase):
     def setUp(self):
         # Patch Brain to avoid real LLM calls during tests
@@ -21,6 +35,20 @@ class TestOrchestrator(unittest.TestCase):
             self.orchestrator.brain = MagicMock()
             self.orchestrator.brain.settings = MagicMock()
             self.orchestrator.brain.settings.system_prompt = "You are Jarvis"
+
+            # Mock persona system
+            mock_persona = _make_mock_persona()
+            self.orchestrator.brain.personas = MagicMock()
+            self.orchestrator.brain.personas.get_active.return_value = mock_persona
+            self.orchestrator.brain.personas.get_active_name.return_value = "witty"
+            self.orchestrator.brain.personas.list_all.return_value = [
+                mock_persona,
+                _make_mock_persona("professional", "Professional", "No-nonsense", "en-US-GuyNeural"),
+            ]
+
+            # Mock TTS
+            self.orchestrator.tts = MagicMock()
+            self.orchestrator.tts.get_voice.return_value = "en-GB-RyanNeural"
 
     def test_empty_command(self):
         response = self.orchestrator.process_command("")
@@ -54,6 +82,7 @@ class TestOrchestrator(unittest.TestCase):
         self.orchestrator.brain.get_status = MagicMock(return_value={
             "provider": "ollama",
             "model": "gemma:2b",
+            "persona": "Witty JARVIS",
             "temperature": 0.7,
             "top_p": 0.9,
             "max_tokens": 512,
@@ -67,6 +96,7 @@ class TestOrchestrator(unittest.TestCase):
         self.assertIn("Brain Status", response)
         self.assertIn("gemma:2b", response)
         self.assertIn("connected", response)
+        self.assertIn("Witty JARVIS", response)
 
     def test_llm_set_temperature_command(self):
         self.orchestrator.brain.set_option = MagicMock(
@@ -102,7 +132,7 @@ class TestOrchestrator(unittest.TestCase):
 
     def test_llm_reset_command(self):
         self.orchestrator.brain.reset_settings = MagicMock(
-            return_value="Brain settings and memory reset to defaults."
+            return_value="Brain settings, memory, and persona reset to defaults."
         )
         response = self.orchestrator.process_command("llm reset")
         self.assertIn("reset", response.lower())
@@ -127,6 +157,7 @@ class TestOrchestrator(unittest.TestCase):
         self.orchestrator.brain.get_status = MagicMock(return_value={
             "provider": "gemini",
             "model": "gemini-2.0-flash",
+            "persona": "Professional",
             "temperature": 0.7,
             "top_p": 0.9,
             "max_tokens": 512,
@@ -138,6 +169,53 @@ class TestOrchestrator(unittest.TestCase):
         response = self.orchestrator.process_command("brain status")
         self.assertIn("Brain Status", response)
 
+    # ── Persona Tests ────────────────────────────────────────────────────
+
+    def test_persona_list_command(self):
+        """'persona list' should list available personas."""
+        response = self.orchestrator.process_command("persona list")
+        self.assertIn("Available Personas", response)
+        self.assertIn("Witty JARVIS", response)
+        self.assertIn("Professional", response)
+
+    def test_persona_set_command(self):
+        """'persona set professional' should switch persona."""
+        self.orchestrator.brain.set_persona = MagicMock(
+            return_value=(True, "Persona switched to 'Professional'.", "en-US-GuyNeural")
+        )
+        prof = _make_mock_persona("professional", "Professional", "No-nonsense", "en-US-GuyNeural")
+        self.orchestrator.brain.personas.get_active.return_value = prof
+
+        response = self.orchestrator.process_command("persona set professional")
+        self.assertIn("Professional", response)
+        self.orchestrator.brain.set_persona.assert_called_once_with("professional")
+        self.orchestrator.tts.set_voice.assert_called_with("en-US-GuyNeural")
+
+    def test_persona_status_command(self):
+        """'persona status' should show current persona."""
+        response = self.orchestrator.process_command("persona status")
+        self.assertIn("Witty JARVIS", response)
+        self.assertIn("en-GB-RyanNeural", response)
+
+    def test_persona_reset_command(self):
+        """'persona reset' should reset to witty."""
+        self.orchestrator.brain.personas.reset.return_value = "Persona reset to 'Witty JARVIS'."
+        response = self.orchestrator.process_command("persona reset")
+        self.assertIn("Witty JARVIS", response)
+
+    def test_voice_set_command(self):
+        """'voice set en-US-GuyNeural' should change voice."""
+        response = self.orchestrator.process_command("voice set en-US-GuyNeural")
+        self.orchestrator.tts.set_voice.assert_called_with("en-US-GuyNeural")
+        self.assertIn("en-US-GuyNeural", response)
+
+    def test_voice_list_command(self):
+        """'voice list' should show recommended voices."""
+        response = self.orchestrator.process_command("voice list")
+        self.assertIn("Recommended Voices", response)
+        self.assertIn("en-GB-RyanNeural", response)
+
 
 if __name__ == '__main__':
     unittest.main()
+
