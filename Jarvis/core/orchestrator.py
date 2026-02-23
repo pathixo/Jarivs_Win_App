@@ -34,19 +34,17 @@ logger = logging.getLogger("jarvis.orchestrator")
 
 # Commands that are safe to run directly (no LLM needed)
 DIRECT_SHELL_PATTERNS = [
-    # Common shell builtins / utilities
-    r"^\b(cls|dir|ls|cd|pwd|ipconfig|whoami|ping|echo|mkdir|rm|rmdir|del|copy|"
+    # Common shell builtins / utilities (must START with the command)
+    r"^(cls|dir|ls|cd|pwd|ipconfig|whoami|ping|echo|mkdir|rm|rmdir|del|copy|"
     r"move|type|cat|ren|rename|attrib|tree|find|findstr|sort|more|fc|comp|xcopy|"
     r"tasklist|taskkill|systeminfo|hostname|netstat|nslookup|tracert|shutdown|"
     r"get-process|get-service|get-childitem|set-location|get-content|"
     r"select-object|where-object|format-table|format-list|out-file|"
     r"start-process|stop-process|restart-service|get-date)\b",
     # Dev tools
-    r"^\b(git|npm|npx|pip|python|node|docker|cargo|go|rustc|javac|java|dotnet)\b",
-    # Explicit run/exec prefix
-    r"^(run|exec|execute|shell)\s+(.+)",
+    r"^(git|npm|npx|pip|python|node|docker|cargo|go|rustc|javac|java|dotnet)\b",
     # App launchers
-    r"^\b(notepad|calc|explorer|code|chrome|firefox|edge|mspaint|cmd|powershell)\b",
+    r"^(notepad|calc|explorer|code|chrome|firefox|edge|mspaint|cmd|powershell)\b",
 ]
 
 # Dangerous commands that need extra caution
@@ -71,9 +69,10 @@ class Orchestrator:
     Central command router. Owns Brain + Tools and handles all user input.
     """
 
-    def __init__(self):
+    def __init__(self, worker=None):
         self.brain = Brain()
         self.tools = Tools()
+        self.worker = worker
         logger.info("Orchestrator initialized")
 
     # ── Main Entry Point ────────────────────────────────────────────────────
@@ -126,15 +125,10 @@ class Orchestrator:
     def _detect_shell_command(self, text: str) -> Optional[str]:
         """
         Check if the input is a direct shell command.
-        Returns the command to run, or None.
+        Returns the command to run, or None if it should go to the LLM.
         """
         for pattern in DIRECT_SHELL_PATTERNS:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                # If it was "run/exec <cmd>", extract the actual command
-                groups = match.groups()
-                if groups and len(groups) >= 2 and groups[1]:
-                    return groups[1].strip()
+            if re.search(pattern, text, re.IGNORECASE):
                 return text
         return None
 
@@ -234,6 +228,9 @@ class Orchestrator:
             else:
                 # Print output with shell output color
                 clr.print_shell_output(final_out)
+
+            if self.worker:
+                self.worker.output_ready.emit(final_out)
 
             # Truncate for TTS if needed
             if len(final_out) > MAX_OUTPUT_LENGTH:

@@ -50,13 +50,13 @@ def main():
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)  # Keep running when window hides
 
-        orchestrator = Orchestrator()
-        tts = TTS()
         worker = Worker()
 
         window = MainWindow()
         # Don't show immediately if we want silent start, but generally show on launch
         window.show()
+
+        orchestrator = Orchestrator(worker=worker)
 
         # Listener (fully autonomous)
         listener = Listener()
@@ -128,6 +128,9 @@ def main():
 
         # Connect voice commands to orchestrator (SINGLE connection)
         listener.command_received.connect(on_command_input, Qt.ConnectionType.QueuedConnection)
+
+        # Connect GUI typed commands to orchestrator (same pipeline as voice)
+        window.command_submitted.connect(on_command_input, Qt.ConnectionType.QueuedConnection)
 
         # TTS audio playback
         tts.audio_generated.connect(window.play_audio, Qt.ConnectionType.QueuedConnection)

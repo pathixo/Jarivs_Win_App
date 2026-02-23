@@ -33,7 +33,12 @@ class Tools:
             # Run in workspace directory
             result = subprocess.run(command, shell=True, capture_output=True, text=True, cwd=self.workspace_dir)
             if result.returncode == 0:
-                return f"Output:\n{result.stdout}"
+                if command.lower().startswith("mkdir "):
+                    dirname = command.split(" ")[1]
+                    os.chdir(os.path.join(self.workspace_dir, dirname))
+                    return f"Output:\n{result.stdout}\nChanged directory to {dirname}"
+                else:
+                    return f"Output:\n{result.stdout}"
             else:
                 return f"Error:\n{result.stderr}"
         except Exception as e:
