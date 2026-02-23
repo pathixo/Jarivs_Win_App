@@ -3,3 +3,33 @@ Traceback (most recent call last):
   File "D:\Coding\Projects\Antigravity\Jarvis\main.py", line 111, in process
     print(f"[LLM] Response in {t1-t0:.2f}s: {response[:100]}...")
 OSError: [Errno 22] Invalid argument
+2026-02-23 15:54:19,755 - ERROR - Main Loop Crash
+Traceback (most recent call last):
+  File "D:\Coding\Projects\Antigravity\Jarvis\main.py", line 85, in main
+    listener.state_changed.connect(window.orb.set_state, Qt.ConnectionType.QueuedConnection)
+                                   ^^^^^^^^^^
+AttributeError: 'MainWindow' object has no attribute 'orb'
+2026-02-23 15:55:59,433 - ERROR - Main Loop Crash
+Traceback (most recent call last):
+  File "D:\Coding\Projects\Antigravity\Jarvis\main.py", line 55, in main
+    window = MainWindow()
+             ^^^^^^^^^^^^
+  File "D:\Coding\Projects\Antigravity\Jarvis\ui\window.py", line 116, in __init__
+    self.terminal_btn.clicked.connect(self.show_terminal_window)
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MainWindow' object has no attribute 'show_terminal_window'
+2026-02-23 16:05:43,803 - ERROR - Main Loop Crash
+Traceback (most recent call last):
+  File "D:\Coding\Projects\Antigravity\Jarvis\main.py", line 55, in main
+    window = MainWindow()
+             ^^^^^^^^^^^^
+  File "D:\Coding\Projects\Antigravity\Jarvis\ui\window.py", line 116, in __init__
+    self.terminal_btn.clicked.connect(self.show_terminal_window)
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MainWindow' object has no attribute 'show_terminal_window'
+2026-02-23 16:12:07,003 - ERROR - Main Loop Crash
+Traceback (most recent call last):
+  File "D:\Coding\Projects\Antigravity\Jarvis\main.py", line 136, in main
+    tts.audio_generated.connect(window.play_audio, Qt.ConnectionType.QueuedConnection)
+    ^^^
+NameError: name 'tts' is not defined

@@ -17,14 +17,58 @@ Color scheme:
 
 import os
 import sys
+import ctypes
 
-# Try to use colorama for Windows ANSI support
-try:
-    import colorama
-    colorama.init(autoreset=True)
-    _HAS_COLORAMA = True
-except ImportError:
-    _HAS_COLORAMA = False
+
+# ─────────────── Force-enable ANSI on Windows ───────────────────────────────
+
+def _enable_windows_ansi():
+    """
+    Enable ANSI escape code processing on Windows 10+ console.
+    Uses three strategies for maximum compatibility:
+      1. ctypes: SetConsoleMode with ENABLE_VIRTUAL_TERMINAL_PROCESSING
+      2. os.system(''): Known trick that activates ANSI on Win10+
+      3. colorama: Fallback that converts ANSI to Win32 API calls
+    """
+    if sys.platform != "win32":
+        return True
+
+    # Strategy 1: Direct Win32 API — most reliable
+    try:
+        kernel32 = ctypes.windll.kernel32
+        # STD_OUTPUT_HANDLE = -11
+        handle = kernel32.GetStdHandle(-11)
+        # Get current mode
+        mode = ctypes.c_ulong()
+        kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+        # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        # ENABLE_PROCESSED_OUTPUT = 0x0001
+        new_mode = mode.value | 0x0004 | 0x0001
+        result = kernel32.SetConsoleMode(handle, new_mode)
+        if result:
+            return True
+    except Exception:
+        pass
+
+    # Strategy 2: os.system trick — works on many Win10+ setups
+    try:
+        os.system("")
+    except Exception:
+        pass
+
+    # Strategy 3: colorama as fallback
+    try:
+        import colorama
+        colorama.init(convert=True, strip=False)
+        return True
+    except ImportError:
+        pass
+
+    return True  # Assume modern terminal, try anyway
+
+
+# Run at import time
+_enable_windows_ansi()
 
 
 # ─────────────────────────── ANSI Codes ─────────────────────────────────────
@@ -60,24 +104,12 @@ class _Colors:
 
 C = _Colors()
 
-
-def _supports_color() -> bool:
-    """Check if the terminal supports ANSI colors."""
-    if os.getenv("NO_COLOR"):
-        return False
-    if _HAS_COLORAMA:
-        return True
-    # Check for Windows Terminal, VS Code, or other modern terminals
-    if sys.platform == "win32":
-        return os.getenv("WT_SESSION") or os.getenv("TERM_PROGRAM") == "vscode"
-    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-
-
-_USE_COLOR = _supports_color()
+# Always enable colors — we force ANSI support above
+_USE_COLOR = not os.getenv("NO_COLOR")
 
 
 def _wrap(color: str, text: str) -> str:
-    """Wrap text with color codes if terminal supports it."""
+    """Wrap text with color codes."""
     if not _USE_COLOR:
         return text
     return f"{color}{text}{C.RESET}"
