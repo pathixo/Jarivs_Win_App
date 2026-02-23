@@ -69,11 +69,13 @@ class Orchestrator:
     Central command router. Owns Brain + Tools and handles all user input.
     """
 
-    def __init__(self, worker=None, tts=None):
+    def __init__(self, worker=None, tts=None, listener=None):
         self.brain = Brain()
         self.tools = Tools()
         self.worker = worker
         self.tts = tts  # TTS instance for voice switching
+        self.listener = listener  # Listener instance for STT language switching
+        self._stt_language = "auto"  # Track current STT language
 
         # Apply initial persona voice to TTS
         if self.tts:
@@ -125,14 +127,20 @@ class Orchestrator:
                 print(clr.info(result))
                 return result
 
-            # 5. Direct shell command detection
+            # 5. STT commands: "stt ..."
+            if re.search(r"^stt\b", command_text, re.IGNORECASE):
+                result = self._handle_stt_command(command_text)
+                print(clr.info(result))
+                return result
+
+            # 6. Direct shell command detection
             shell_cmd = self._detect_shell_command(command_text)
             if shell_cmd:
                 clr.print_shell(shell_cmd)
                 result = self._execute_shell(shell_cmd)
                 return result
 
-            # 6. Route to Brain (LLM) for everything else
+            # 7. Route to Brain (LLM) for everything else
             return self._process_with_llm(command_text)
 
         except Exception as e:
@@ -510,5 +518,89 @@ class Orchestrator:
             if self.tts:
                 return f"Current voice: {self.tts.get_voice()}"
             return "TTS not available."
+
+        return help_text
+
+    # -- STT Commands --------------------------------------------------------
+
+    # Common language name -> Whisper code mapping
+    LANGUAGE_ALIASES = {
+        "auto": "auto", "detect": "auto",
+        "english": "en", "en": "en",
+        "hindi": "hi", "hi": "hi",
+        "spanish": "es", "es": "es",
+        "french": "fr", "fr": "fr",
+        "german": "de", "de": "de",
+        "japanese": "ja", "ja": "ja",
+        "chinese": "zh", "zh": "zh",
+        "korean": "ko", "ko": "ko",
+        "portuguese": "pt", "pt": "pt",
+        "russian": "ru", "ru": "ru",
+        "arabic": "ar", "ar": "ar",
+        "italian": "it", "it": "it",
+        "tamil": "ta", "ta": "ta",
+        "telugu": "te", "te": "te",
+        "bengali": "bn", "bn": "bn",
+        "marathi": "mr", "mr": "mr",
+        "gujarati": "gu", "gu": "gu",
+        "kannada": "kn", "kn": "kn",
+        "malayalam": "ml", "ml": "ml",
+        "punjabi": "pa", "pa": "pa",
+        "urdu": "ur", "ur": "ur",
+    }
+
+    def _handle_stt_command(self, command_text: str) -> str:
+        """Handle STT language switching commands."""
+
+        help_text = (
+            "STT Controls:\n"
+            "-----------------------------------\n"
+            "  stt language <lang>   - Set STT language (auto/hindi/english/...)\n"
+            "  stt language status   - Show current STT language\n"
+            "  stt language list     - Show supported languages\n"
+        )
+
+        # stt help
+        if re.search(r"^stt\s+help$", command_text, re.IGNORECASE):
+            return help_text
+
+        # stt language status
+        if re.search(r"^stt\s+language\s+status$", command_text, re.IGNORECASE):
+            return f"Current STT language: {self._stt_language}"
+
+        # stt language list
+        if re.search(r"^stt\s+language\s+list$", command_text, re.IGNORECASE):
+            langs = sorted(set(self.LANGUAGE_ALIASES.values()))
+            names = []
+            for code in langs:
+                # Find the human-readable name for this code
+                name = next((k for k, v in self.LANGUAGE_ALIASES.items() if v == code and len(k) > 2), code)
+                names.append(f"  - {name} ({code})")
+            return "Supported STT Languages:\n" + "\n".join(names)
+
+        # stt language <lang>
+        lang_match = re.search(r"^stt\s+language\s+(.+)$", command_text, re.IGNORECASE)
+        if lang_match:
+            lang_input = lang_match.group(1).strip().lower()
+            lang_code = self.LANGUAGE_ALIASES.get(lang_input, lang_input)
+
+            # Send LANG command to the STT worker
+            if self.listener and hasattr(self.listener, '_worker') and self.listener._worker:
+                try:
+                    self.listener._worker.stdin.write(f"LANG:{lang_code}\n")
+                    self.listener._worker.stdin.flush()
+                    import json
+                    response = self.listener._worker.stdout.readline().strip()
+                    if response:
+                        data = json.loads(response)
+                        if data.get("status") == "lang_set":
+                            self._stt_language = lang_code if lang_code != "auto" else "auto"
+                            display = lang_input if lang_input in self.LANGUAGE_ALIASES else lang_code
+                            return f"STT language set to '{display}' ({lang_code}). Speak now!"
+                except Exception as e:
+                    return f"Error setting STT language: {e}"
+
+            self._stt_language = lang_code if lang_code != "auto" else "auto"
+            return f"STT language set to '{lang_code}' (will apply on next restart)."
 
         return help_text
