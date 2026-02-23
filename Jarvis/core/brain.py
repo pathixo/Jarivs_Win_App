@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from Jarvis.core.personas import PersonaManager
+
 import requests
 
 from Jarvis.config import (
@@ -29,6 +31,7 @@ from Jarvis.config import (
     GROK_API_KEY,
     GROK_MODEL,
     LLM_PROVIDER,
+    DEFAULT_PERSONA,
 )
 
 logger = logging.getLogger("jarvis.brain")
@@ -426,9 +429,14 @@ class Brain:
     RETRY_DELAY = 1.0  # seconds
 
     def __init__(self, provider: Optional[str] = None):
+        # Persona system
+        self.personas = PersonaManager(default=DEFAULT_PERSONA)
+        active_persona = self.personas.get_active()
+
         self.settings = BrainSettings(
             provider=provider or LLM_PROVIDER,
             model=self._default_model_for(provider or LLM_PROVIDER),
+            system_prompt=active_persona.system_prompt,
         )
         self.memory = ConversationMemory(max_messages=self.settings.max_history)
 
@@ -441,10 +449,10 @@ class Brain:
         }
 
         logger.info(
-            "Brain initialized | provider=%s | model=%s",
-            self.settings.provider, self.settings.model,
+            "Brain initialized | provider=%s | model=%s | persona=%s",
+            self.settings.provider, self.settings.model, active_persona.name,
         )
-        print(f"Brain initialized | provider={self.settings.provider} | model={self.settings.model}")
+        print(f"Brain initialized | provider={self.settings.provider} | model={self.settings.model} | persona={active_persona.name}")
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -609,13 +617,29 @@ class Brain:
         self.settings.system_prompt = prompt
         return True, "System prompt updated."
 
+    def set_persona(self, name: str) -> tuple[bool, str, str]:
+        """Switch persona. Returns (ok, message, new_voice_id)."""
+        ok, message = self.personas.set_active(name)
+        if ok:
+            profile = self.personas.get_active()
+            self.settings.system_prompt = profile.system_prompt
+            return True, message, profile.voice
+        return False, message, ""
+
+    def get_persona_name(self) -> str:
+        """Return the active persona's display name."""
+        return self.personas.get_active().display_name
+
     def reset_settings(self) -> str:
+        self.personas.reset()
+        active_persona = self.personas.get_active()
         self.settings = BrainSettings(
             provider=LLM_PROVIDER,
             model=self._default_model_for(LLM_PROVIDER),
+            system_prompt=active_persona.system_prompt,
         )
         self.memory.clear()
-        return "Brain settings and memory reset to defaults."
+        return "Brain settings, memory, and persona reset to defaults."
 
     def clear_memory(self) -> str:
         self.memory.clear()
@@ -627,6 +651,7 @@ class Brain:
         return {
             "provider": self.settings.provider,
             "model": self.settings.model,
+            "persona": self.personas.get_active().display_name,
             "temperature": self.settings.temperature,
             "top_p": self.settings.top_p,
             "max_tokens": self.settings.max_tokens,

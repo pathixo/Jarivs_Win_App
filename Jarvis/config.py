@@ -56,6 +56,9 @@ WAKE_WORD = "jarvis"
 # TTS Voice
 TTS_VOICE = "en-US-GuyNeural"
 
+# Default Persona
+DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", "witty")
+
 # ─────────────────────── Paths ──────────────────────────────────────────────
 BASE_DIR = get_base_path()
 DATA_DIR = get_app_data_path()
