@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QFrame, QGraphicsDropShadowEffect, 
                              QSizePolicy, QApplication, QLineEdit, QTextEdit)
 from PyQt6.QtCore import Qt, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QRadialGradient, QTextCursor
+from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QRadialGradient, QTextCursor, QTextCharFormat
 
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
@@ -14,6 +14,8 @@ class MainWindow(QMainWindow):
 
     # Signal emitted when user submits a typed command
     command_submitted = pyqtSignal(str)
+    # Signal emitted when user responds to a confirmation request
+    confirm_response = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
@@ -255,6 +257,9 @@ class MainWindow(QMainWindow):
         self._cmd_history = []
         self._history_index = -1
 
+        # Streaming state
+        self._streaming = False
+
         # Dragging variables
         self.old_pos = None
 
@@ -391,6 +396,41 @@ class MainWindow(QMainWindow):
         else:
             self.append_response(text, "ai")
 
+    # ── Streaming Response Display ───────────────────────────────────────
+
+    def on_stream_begin(self):
+        """Start a new streaming response block in the log panel."""
+        self._streaming = True
+        color = "#00ff9f"
+        self._append_log(
+            f"<span style='color:{color};font-weight:bold;'>[JARVIS]</span> "
+        )
+        self.append_to_terminal("[JARVIS] ")
+
+    def on_stream_chunk(self, text: str):
+        """Append a streaming token inline (no new line)."""
+        if not self._streaming:
+            return
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor("#00ff9f"))
+
+        cursor = self.response_log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(text, fmt)
+        self.response_log.setTextCursor(cursor)
+        self.response_log.ensureCursorVisible()
+
+        if hasattr(self, "terminal_text"):
+            tc = self.terminal_text.textCursor()
+            tc.movePosition(QTextCursor.MoveOperation.End)
+            tc.insertText(text)
+            self.terminal_text.setTextCursor(tc)
+            self.terminal_text.ensureCursorVisible()
+
+    def on_stream_end(self):
+        """Finalise a streaming response block."""
+        self._streaming = False
+
     # ── Window State ────────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
@@ -493,6 +533,52 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'terminal_window'):
             self.create_terminal_window()
         self.terminal_window.show()
+
+    def show_confirmation_dialog(self, command_text: str):
+        """Show a styled confirmation dialog for shell commands."""
+        from PyQt6.QtWidgets import QMessageBox
+        
+        # Create a customized message box
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Permission Required")
+        msg.setText(f"Jarvis wants to execute a shell command:\n\n{command_text}")
+        msg.setIcon(QMessageBox.Icon.Question)
+        
+        # Style it
+        msg.setStyleSheet("""
+            QMessageBox {
+                background-color: #0f172a;
+                color: #e2e8f0;
+                border: 1px solid #3b82f6;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #e2e8f0;
+                font-family: 'Segoe UI';
+                font-size: 13px;
+                min-width: 300px;
+            }
+            QPushButton {
+                background-color: #1e293b;
+                color: #3b82f6;
+                border: 1px solid #3b82f6;
+                border-radius: 5px;
+                padding: 5px 15px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background-color: #3b82f6;
+                color: #ffffff;
+            }
+        """)
+        
+        run_btn = msg.addButton("Run", QMessageBox.ButtonRole.AcceptRole)
+        cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        
+        msg.exec()
+        
+        approved = msg.clickedButton() == run_btn
+        self.confirm_response.emit(approved)
 
 def _escape_html(text: str) -> str:
     """Escape HTML special characters for safe display in QTextEdit."""

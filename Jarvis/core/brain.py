@@ -12,6 +12,8 @@ provider failover, and structured settings management.
 """
 
 import logging
+import json
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -24,6 +26,9 @@ import requests
 from Jarvis.config import (
     OLLAMA_URL,
     OLLAMA_MODEL,
+    OLLAMA_FAST_MODEL,
+    OLLAMA_LOGIC_MODEL,
+    OLLAMA_AUTO_SELECT,
     GEMINI_API_KEY,
     GEMINI_MODEL,
     GROQ_API_KEY,
@@ -174,6 +179,36 @@ class _OllamaBackend:
         resp.raise_for_status()
         return resp.json().get("response", "")
 
+    def generate_stream(self, settings: BrainSettings, prompt: str, history: list[dict]):
+        """Yield response tokens from Ollama's streaming API."""
+        payload = {
+            "model": settings.model,
+            "prompt": prompt,
+            "system": settings.system_prompt,
+            "stream": True,
+            "options": {
+                "temperature": settings.temperature,
+                "top_p": settings.top_p,
+                "num_predict": settings.max_tokens,
+            },
+        }
+        if history:
+            context_str = "\n".join(
+                f"{m['role'].capitalize()}: {m['content']}" for m in history[-6:]
+            )
+            payload["prompt"] = f"Previous conversation:\n{context_str}\n\nUser: {prompt}"
+
+        resp = requests.post(self._url, json=payload, stream=True, timeout=settings.timeout)
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if line:
+                data = json.loads(line)
+                token = data.get("response", "")
+                if token:
+                    yield token
+                if data.get("done"):
+                    break
+
     def health_check(self) -> bool:
         try:
             r = requests.get("http://localhost:11434/api/tags", timeout=5)
@@ -257,6 +292,60 @@ class _GeminiBackend:
         parts = candidates[0].get("content", {}).get("parts", [])
         return parts[0].get("text", "") if parts else ""
 
+    def generate_stream(self, settings: BrainSettings, prompt: str, history: list[dict]):
+        """Yield response tokens from Gemini's streaming SSE endpoint."""
+        if not self._api_key:
+            raise ValueError("Gemini API key not configured. Set GEMINI_API_KEY in .env")
+
+        model = settings.model if settings.provider == "gemini" else GEMINI_MODEL
+        url = f"{self.BASE_URL}/{model}:streamGenerateContent?key={self._api_key}&alt=sse"
+
+        contents = []
+        contents.append({
+            "role": "user",
+            "parts": [{"text": f"[SYSTEM INSTRUCTION]\n{settings.system_prompt}"}]
+        })
+        contents.append({
+            "role": "model",
+            "parts": [{"text": "Understood. I am Jarvis, ready to assist."}]
+        })
+        for msg in history[-8:]:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": settings.temperature,
+                "topP": settings.top_p,
+                "maxOutputTokens": settings.max_tokens,
+            },
+        }
+
+        resp = requests.post(url, json=payload, stream=True, timeout=settings.timeout)
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            line = line.decode() if isinstance(line, bytes) else line
+            if line.startswith("data: "):
+                chunk = line[6:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    data = json.loads(chunk)
+                    parts = (
+                        data.get("candidates", [{}])[0]
+                        .get("content", {})
+                        .get("parts", [])
+                    )
+                    text = parts[0].get("text", "") if parts else ""
+                    if text:
+                        yield text
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
     def health_check(self) -> bool:
         if not self._api_key:
             return False
@@ -325,28 +414,52 @@ class _GroqBackend:
 
         return choices[0].get("message", {}).get("content", "")
 
-    def health_check(self) -> bool:
+    def generate_stream(self, settings: BrainSettings, prompt: str, history: list[dict]):
+        """Yield tokens from Groq's OpenAI-compatible SSE streaming endpoint."""
         if not self._api_key:
-            return False
-        try:
-            headers = {"Authorization": f"Bearer {self._api_key}"}
-            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
-            return r.status_code == 200
-        except Exception:
-            return False
+            raise ValueError("Groq API key not configured. Set GROQ_API_KEY in .env")
 
-    def list_models(self) -> tuple[bool, list[str] | str]:
-        if not self._api_key:
-            return False, "Groq API key not configured."
-        try:
-            headers = {"Authorization": f"Bearer {self._api_key}"}
-            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
-            r.raise_for_status()
-            models = r.json().get("data", [])
-            names = [m.get("id", "") for m in models]
-            return True, names
-        except Exception as e:
-            return False, f"Could not fetch Groq models: {e}"
+        model = settings.model if settings.provider == "groq" else GROQ_MODEL
+        messages = [{"role": "system", "content": settings.system_prompt}]
+        for msg in history[-8:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": settings.temperature,
+            "top_p": settings.top_p,
+            "max_tokens": settings.max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        resp = requests.post(
+            self.BASE_URL, json=payload, headers=headers,
+            stream=True, timeout=settings.timeout,
+        )
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            line = line.decode() if isinstance(line, bytes) else line
+            if line.startswith("data: "):
+                chunk = line[6:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    data = json.loads(chunk)
+                    delta = data["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        yield delta
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+    def health_check(self) -> bool:
 
 
 class _GrokBackend:
@@ -393,28 +506,52 @@ class _GrokBackend:
 
         return choices[0].get("message", {}).get("content", "")
 
-    def health_check(self) -> bool:
+    def generate_stream(self, settings: BrainSettings, prompt: str, history: list[dict]):
+        """Yield tokens from xAI Grok's OpenAI-compatible SSE streaming endpoint."""
         if not self._api_key:
-            return False
-        try:
-            headers = {"Authorization": f"Bearer {self._api_key}"}
-            r = requests.get("https://api.x.ai/v1/models", headers=headers, timeout=10)
-            return r.status_code == 200
-        except Exception:
-            return False
+            raise ValueError("Grok API key not configured. Set GROK_API_KEY in .env")
 
-    def list_models(self) -> tuple[bool, list[str] | str]:
-        if not self._api_key:
-            return False, "Grok API key not configured."
-        try:
-            headers = {"Authorization": f"Bearer {self._api_key}"}
-            r = requests.get("https://api.x.ai/v1/models", headers=headers, timeout=10)
-            r.raise_for_status()
-            models = r.json().get("data", [])
-            names = [m.get("id", "") for m in models]
-            return True, names
-        except Exception as e:
-            return False, f"Could not fetch Grok models: {e}"
+        model = settings.model if settings.provider == "grok" else GROK_MODEL
+        messages = [{"role": "system", "content": settings.system_prompt}]
+        for msg in history[-8:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": settings.temperature,
+            "top_p": settings.top_p,
+            "max_tokens": settings.max_tokens,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        resp = requests.post(
+            self.BASE_URL, json=payload, headers=headers,
+            stream=True, timeout=settings.timeout,
+        )
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            line = line.decode() if isinstance(line, bytes) else line
+            if line.startswith("data: "):
+                chunk = line[6:].strip()
+                if chunk == "[DONE]":
+                    break
+                try:
+                    data = json.loads(chunk)
+                    delta = data["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        yield delta
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+    def health_check(self) -> bool:
 
 
 # ─────────────────────────── Brain ──────────────────────────────────────────
@@ -455,6 +592,60 @@ class Brain:
         print(f"Brain initialized | provider={self.settings.provider} | model={self.settings.model} | persona={active_persona.name}")
 
     # ── Public API ──────────────────────────────────────────────────────────
+
+    # Patterns that indicate a query needing deeper reasoning / code work.
+    _LOGIC_PATTERNS = [
+        r"\b(explain|why\s+does|how\s+does|analyze|analyse|compare|debug|fix|write|implement|refactor|design)\b",
+        r"\b(algorithm|function|class|module|architecture|pattern|code|script|program)\b",
+        r"\b(step.{0,5}by.{0,5}step|in\s+detail|comprehensively|complex|reason)\b",
+    ]
+
+    def generate_response_stream(self, text: str, history: list[dict] | None = None):
+        """
+        Yield LLM tokens as they arrive (streaming).
+
+        Auto-selects the Ollama model based on query complexity when
+        OLLAMA_AUTO_SELECT is enabled. Falls back to non-streaming if the
+        backend does not implement generate_stream().
+
+        Updates conversation memory after the full response is collected.
+        """
+        if not text or not text.strip():
+            return
+
+        conv_history = history if history is not None else self.memory.get_history()
+
+        # Auto-select Ollama model for this request only
+        original_model = self.settings.model
+        if OLLAMA_AUTO_SELECT and self.settings.provider == "ollama":
+            selected = self._select_model_for_query(text.strip())
+            if selected != original_model:
+                self.settings.model = selected
+                logger.info("Auto-selected model: %s (was: %s)", selected, original_model)
+                print(f"  [Auto-Select] Model: {selected}")
+
+        backend = self._get_backend()
+        full_response = ""
+
+        try:
+            for token in backend.generate_stream(self.settings, text.strip(), conv_history):
+                full_response += token
+                yield token
+        except AttributeError:
+            # Backend doesn't implement generate_stream — fall back
+            logger.warning("Backend %s has no streaming support, falling back", self.settings.provider)
+            response = backend.generate(self.settings, text.strip(), conv_history)
+            full_response = response
+            yield response
+        except Exception as e:
+            logger.error("Streaming error: %s", e, exc_info=True)
+            yield f"Error: {e}"
+        finally:
+            self.settings.model = original_model  # always restore after auto-select
+
+        if full_response:
+            self.memory.add("user", text.strip())
+            self.memory.add("assistant", full_response)
 
     def generate_response(self, text: str, history: list[dict] | None = None) -> str:
         """
@@ -675,6 +866,17 @@ class Brain:
     def _get_backend(self):
         provider = Provider(self.settings.provider)
         return self._backends[provider]
+
+    def _select_model_for_query(self, text: str) -> str:
+        """Return the best Ollama model for the query: fast for simple, logic for complex."""
+        for pat in self._LOGIC_PATTERNS:
+            if re.search(pat, text, re.IGNORECASE):
+                logger.debug("Auto-select: logic query → %s", OLLAMA_LOGIC_MODEL)
+                return OLLAMA_LOGIC_MODEL
+        if len(text.split()) > 20:
+            return OLLAMA_LOGIC_MODEL
+        logger.debug("Auto-select: fast query → %s", OLLAMA_FAST_MODEL)
+        return OLLAMA_FAST_MODEL
 
     def _default_model_for(self, provider: str) -> str:
         defaults = {

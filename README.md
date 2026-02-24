@@ -50,7 +50,7 @@ Jarvis:  Here are your Python files.
 | **Listener** | `input/listener.py` | ✅ Complete | Wake word (Porcupine) + STT (Faster-Whisper) pipeline |
 | **UI** | `ui/window.py` | ✅ Complete | PyQt6 GUI with thinking orb, terminal, command input panel |
 | **Tray** | `ui/tray.py` | ✅ Complete | System tray with show/hide, pause/resume, quit |
-| **Tests** | `tests/test_orchestrator.py` | ✅ 19 passing | Full coverage: commands, personas, voices, safety |
+| **Tests** | `tests/test_orchestrator.py` | ✅ 23 passing | Full coverage: commands, personas, voices, safety |
 
 ---
 
@@ -471,9 +471,9 @@ brain.set_persona("professional")     # Switch persona
 
 | Feature | Description | Status |
 |---|---|---|
-| Feedback Loop | Feed shell output back to LLM for verification/debugging | 🔲 Planned |
-| Task-Aware Context | Conversation memory that remembers project context | 🔲 Planned |
-| Error Auto-Recovery | LLM auto-suggests fixes when commands fail | 🔲 Planned |
+| **Feedback Loop** | Feed shell output back to LLM for verification/debugging | ✅ Done |
+| **Error Auto-Recovery** | LLM auto-suggests fixes when commands fail | ✅ Done |
+| **Task-Aware Context** | Conversation memory that remembers project context | 🔲 Planned |
 
 ### Phase 2: Better Models & Performance
 
@@ -487,9 +487,9 @@ brain.set_persona("professional")     # Switch persona
 
 | Feature | Description | Status |
 |---|---|---|
-| Confirmation Mode | User-in-the-loop approval before executing LLM commands | 🔲 Planned |
-| WSL Sandbox | Route risky commands to Windows Subsystem for Linux | 🔲 Planned |
-| Command Audit Log | Log every executed command with timestamps | 🔲 Planned |
+| **Confirmation Mode** | User-in-the-loop approval before executing LLM commands | ✅ Done |
+| **WSL Sandbox** | Route risky commands to Windows Subsystem for Linux | ✅ Done |
+| **Command Audit Log** | Log every executed command with timestamps | 🔲 Planned |
 
 ### Phase 4: Advanced Features
 

@@ -30,6 +30,59 @@ from Jarvis.core import colors as clr
 logger = logging.getLogger("jarvis.orchestrator")
 
 
+# ─────────────────────────── Shell Stream Filter ────────────────────────────
+
+class _ShellStreamFilter:
+    """
+    Stateful filter for LLM token streams.
+
+    Strips [SHELL]...[/SHELL] tags in real-time so only conversational text
+    reaches the display callback. Extracted commands are stored in
+    self.shell_commands and executed after streaming completes.
+    """
+
+    _OPEN  = "[SHELL]"
+    _CLOSE = "[/SHELL]"
+
+    def __init__(self):
+        self._buf       = ""   # partial tag detection lookahead buffer
+        self._in_shell  = False
+        self._shell_buf = ""   # accumulates the shell command text
+        self.shell_commands: list[str] = []
+
+    def feed(self, text: str) -> str:
+        """Return the displayable portion of a token (empty when inside a SHELL block)."""
+        display = ""
+        for ch in text:
+            if not self._in_shell:
+                self._buf += ch
+                if self._OPEN in self._buf:
+                    idx = self._buf.index(self._OPEN)
+                    display += self._buf[:idx]
+                    self._buf = ""
+                    self._in_shell = True
+                elif not self._OPEN.startswith(self._buf):
+                    display += self._buf
+                    self._buf = ""
+            else:
+                self._shell_buf += ch
+                if self._CLOSE in self._shell_buf:
+                    idx = self._shell_buf.index(self._CLOSE)
+                    cmd = self._shell_buf[:idx].strip()
+                    if cmd:
+                        self.shell_commands.append(cmd)
+                    self._shell_buf = self._shell_buf[idx + len(self._CLOSE):]
+                    self._in_shell = False
+        return display
+
+    def flush(self) -> str:
+        """Flush any buffered display text at end of stream."""
+        if not self._in_shell:
+            result, self._buf = self._buf, ""
+            return result
+        return ""
+
+
 # ─────────────────────────── Constants ──────────────────────────────────────
 
 # Commands that are safe to run directly (no LLM needed)
@@ -76,6 +129,10 @@ class Orchestrator:
         self.tts = tts  # TTS instance for voice switching
         self.listener = listener  # Listener instance for STT language switching
         self._stt_language = "auto"  # Track current STT language
+        
+        self.confirmation_mode = False  # Ask before running any shell command
+        self.wsl_mode = False           # Run risky/all commands in WSL
+        self._confirm_callback = None   # Callback(command_text) -> bool
 
         # Apply initial persona voice to TTS
         if self.tts:
@@ -87,11 +144,18 @@ class Orchestrator:
 
     # ── Main Entry Point ────────────────────────────────────────────────────
 
-    def process_command(self, command_text: str) -> str:
+    def process_command(self, command_text: str, token_callback=None, begin_callback=None) -> str:
         """
         Main entry: classify intent → route → execute → format response.
-        
-        Returns a string suitable for both terminal display and TTS.
+
+        Args:
+            command_text:   Raw user input (voice or typed).
+            token_callback: Optional callable(str) invoked for each streamed
+                            LLM token (display text only, SHELL tags filtered).
+            begin_callback: Optional callable() invoked just before the first
+                            token arrives (use to prepare the UI stream block).
+
+        Returns a string suitable for TTS.
         """
         command_text = (command_text or "").strip()
         if not command_text:
@@ -133,15 +197,25 @@ class Orchestrator:
                 print(clr.info(result))
                 return result
 
-            # 6. Direct shell command detection
+            # 6. Shell control commands: "shell ..."
+            if re.search(r"^shell\b", command_text, re.IGNORECASE):
+                result = self._handle_shell_command(command_text)
+                print(clr.info(result))
+                return result
+
+            # 7. Direct shell command detection
             shell_cmd = self._detect_shell_command(command_text)
             if shell_cmd:
                 clr.print_shell(shell_cmd)
                 result = self._execute_shell(shell_cmd)
                 return result
 
-            # 7. Route to Brain (LLM) for everything else
-            return self._process_with_llm(command_text)
+            # 8. Route to Brain (LLM) for everything else
+            return self._process_with_llm(
+                command_text,
+                token_callback=token_callback,
+                begin_callback=begin_callback,
+            )
 
         except Exception as e:
             logger.error("Command processing failed: %s", e, exc_info=True)
@@ -162,36 +236,72 @@ class Orchestrator:
 
     # ── LLM Processing ──────────────────────────────────────────────────────
 
-    def _process_with_llm(self, command_text: str) -> str:
+    def _process_with_llm(
+        self,
+        command_text: str,
+        depth: int = 0,
+        token_callback=None,
+        begin_callback=None,
+    ) -> str:
         """
-        Send to Brain, parse response, execute any [SHELL] commands found.
+        Send to Brain, stream/parse response, execute any [SHELL] commands found.
+
+        When token_callback is provided the response is streamed token-by-token
+        with [SHELL] tags filtered out in real-time. Shell commands collected by
+        the filter are executed after streaming completes.
         """
         t0 = time.time()
-        clr.print_debug(f"  Thinking...")
-        llm_response = self.brain.generate_response(command_text)
+        clr.print_debug("  Thinking...")
+
+        if token_callback:
+            # ── Streaming path ──────────────────────────────────────────
+            if begin_callback:
+                begin_callback()
+
+            stream_filter = _ShellStreamFilter()
+            llm_response = ""
+
+            clr.print_ai_start()
+            for token in self.brain.generate_response_stream(command_text):
+                llm_response += token
+                visible = stream_filter.feed(token)
+                if visible:
+                    token_callback(visible)
+                    clr.print_ai_token(visible)
+
+            remaining = stream_filter.flush()
+            if remaining:
+                token_callback(remaining)
+                clr.print_ai_token(remaining)
+            clr.print_ai_end()
+
+            shell_commands = stream_filter.shell_commands
+        else:
+            # ── Non-streaming path (fallback) ───────────────────────────
+            llm_response = self.brain.generate_response(command_text)
+            shell_commands = re.findall(r'\[SHELL\](.*?)\[/SHELL\]', llm_response, re.DOTALL)
+
         elapsed = time.time() - t0
         clr.print_debug(f"  Response in {elapsed:.2f}s")
-
         logger.info("LLM responded in %.2fs (%d chars)", elapsed, len(llm_response))
 
         if not llm_response:
             clr.print_error("No response received.")
             return "I didn't get a response. Please try again."
 
-        # Check for [SHELL] commands in the response
-        shell_commands = re.findall(r'\[SHELL\](.*?)\[/SHELL\]', llm_response, re.DOTALL)
-
         if not shell_commands:
             # Pure conversational response
-            clr.print_ai(llm_response)
+            if not token_callback:
+                clr.print_ai(llm_response)
             return llm_response
 
-        # Extract the conversational part (text outside [SHELL] tags)
+        # Conversational part (outside [SHELL] tags) — for TTS
         clean_text = re.sub(r'\[SHELL\].*?\[/SHELL\]', '', llm_response, flags=re.DOTALL).strip()
 
         results = []
         if clean_text:
-            clr.print_ai(clean_text)
+            if not token_callback:
+                clr.print_ai(clean_text)
             results.append(clean_text)
 
         for cmd in shell_commands:
@@ -204,6 +314,7 @@ class Orchestrator:
                 logger.warning("Dangerous command blocked: %s", cmd)
                 msg = f"Blocked dangerous command: `{cmd}`. Please run manually if intended."
                 clr.print_warning(f"⚠️  {msg}")
+                self.brain.memory.add("system", msg)
                 results.append(msg)
                 continue
 
@@ -211,10 +322,27 @@ class Orchestrator:
             clr.print_shell(cmd)
 
             shell_output = self._execute_shell(cmd, from_llm=True)
+
+            # Feed the output back into the LLM's memory
+            self.brain.memory.add("system", f"Output of `{cmd}`:\n{shell_output}")
+
             if shell_output and shell_output != "Command executed.":
                 results.append(f"Output:\n{shell_output}")
             else:
                 results.append(f"Done: {cmd}")
+
+            # Error auto-recovery (non-streaming only to avoid nesting issues)
+            is_error = shell_output.startswith("Error:") or shell_output.startswith("Shell Error:")
+            if is_error and depth < 2 and not token_callback:
+                clr.print_warning(f"Command failed. Auto-recovering (attempt {depth + 1}/2)...")
+                recovery_prompt = (
+                    f"The command `{cmd}` failed with the following output:\n"
+                    f"{shell_output}\n\n"
+                    "Please analyze the error, explain what went wrong briefly, "
+                    "and provide a corrected command wrapped in [SHELL] tags."
+                )
+                recovery_result = self._process_with_llm(recovery_prompt, depth=depth + 1)
+                results.append(f"--- Auto-Recovery ---\n{recovery_result}")
 
         return "\n".join(results)
 
@@ -228,11 +356,29 @@ class Orchestrator:
             command: The PowerShell command to run.
             from_llm: If True, this command came from LLM output (extra safety).
         """
+        # Confirmation Mode
+        if self.confirmation_mode:
+            if not self._request_confirmation(command):
+                msg = f"Command cancelled by user: `{command}`"
+                clr.print_warning(msg)
+                return msg
+
+        # WSL Sandbox override
+        if self.wsl_mode:
+            logger.info("Routing command to WSL: %s", command)
+            # Simple wsl wrapper. Note: might fail for Windows-specific paths/commands
+            command = f"wsl -- {command}"
+
         logger.info("Shell exec%s: %s", " (from LLM)" if from_llm else "", command)
 
         try:
+            # Decide wrapper based on command content (crude WSL routing if not forced)
+            shell_args = ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+            if command.startswith("wsl -- "):
+                shell_args = ["wsl", "--", command[7:]]
+
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+                shell_args,
                 capture_output=True,
                 text=True,
                 timeout=30,  # Hard timeout to prevent hanging
@@ -304,6 +450,20 @@ class Orchestrator:
                 return True
         return False
 
+    def _request_confirmation(self, command: str) -> bool:
+        """
+        Request user confirmation for a command.
+        Will use the callback if registered (UI), otherwise defaults to console if possible.
+        """
+        if self._confirm_callback:
+            return self._confirm_callback(command)
+        
+        # Fallback (though orchestrator usually runs in non-interactive background)
+        print(f"\n[CONFIRM] Run this command? (y/n): {clr.shell(command)}")
+        # In a background thread without a terminal input, this might hang or fail.
+        # We really rely on the callback from main.py
+        return True # Default to True if no callback to avoid silent stalls
+
     # ── Meta-Commands (llm/brain control) ───────────────────────────────────
 
     def _handle_meta_command(self, command_text: str) -> str:
@@ -323,6 +483,7 @@ class Orchestrator:
             "  llm prompt show      — Show system prompt\n"
             "  llm prompt set <text>— Set system prompt\n"
             "  llm reset            — Reset all settings\n"
+            "  shell ...            — Shell & Sandbox controls\n"
             "  clear memory         — Clear conversation memory\n"
         )
 
@@ -602,5 +763,42 @@ class Orchestrator:
 
             self._stt_language = lang_code if lang_code != "auto" else "auto"
             return f"STT language set to '{lang_code}' (will apply on next restart)."
+
+        return help_text
+
+    def _handle_shell_command(self, command_text: str) -> str:
+        """Handle shell configuration and sandbox controls."""
+        
+        help_text = (
+            "Shell & Sandbox Controls:\n"
+            "-----------------------------------\n"
+            "  shell confirmation on/off - Toggle ask-before-exec\n"
+            "  shell wsl on/off         - Toggle WSL sandbox for commands\n"
+            "  shell status             - Show current shell settings\n"
+        )
+
+        # shell status
+        if re.search(r"^shell\s+status$", command_text, re.IGNORECASE):
+            conf = "ON" if self.confirmation_mode else "OFF"
+            wsl = "ON" if self.wsl_mode else "OFF"
+            return (
+                "Shell Settings:\n"
+                f"  Confirmation Mode: {conf}\n"
+                f"  WSL Sandbox Mode:  {wsl}"
+            )
+
+        # shell confirmation on/off
+        conf_match = re.search(r"^shell\s+confirmation\s+(on|off)$", command_text, re.IGNORECASE)
+        if conf_match:
+            state = conf_match.group(1).lower() == "on"
+            self.confirmation_mode = state
+            return f"Command confirmation mode turned {'ON' if state else 'OFF'}."
+
+        # shell wsl on/off
+        wsl_match = re.search(r"^shell\s+wsl\s+(on|off)$", command_text, re.IGNORECASE)
+        if wsl_match:
+            state = wsl_match.group(1).lower() == "on"
+            self.wsl_mode = state
+            return f"WSL sandbox mode turned {'ON' if state else 'OFF'}."
 
         return help_text
