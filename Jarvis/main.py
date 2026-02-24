@@ -41,8 +41,12 @@ from Jarvis.input.listener import Listener
 
 class Worker(QObject):
     """Thread-safe bridge for UI updates from background threads."""
-    output_ready = pyqtSignal(str)
-    execute_ready = pyqtSignal(str, str)  # command, output
+    output_ready  = pyqtSignal(str)
+    execute_ready = pyqtSignal(str, str)   # command, output
+    stream_begin  = pyqtSignal()           # LLM stream starting
+    stream_token  = pyqtSignal(str)        # individual streamed token
+    stream_end    = pyqtSignal()           # LLM stream finished
+    confirm_request = pyqtSignal(str)     # command text
 
 
 def main():
@@ -57,10 +61,10 @@ def main():
         window.show()
 
         tts = TTS()
-        orchestrator = Orchestrator(worker=worker, tts=tts)
-
         # Listener (fully autonomous)
         listener = Listener()
+
+        orchestrator = Orchestrator(worker=worker, tts=tts, listener=listener)
 
         # System Tray
         tray = JarvisTrayIcon()
@@ -81,6 +85,9 @@ def main():
 
         # Thread-safe UI connections
         worker.output_ready.connect(window.append_terminal_output, Qt.ConnectionType.QueuedConnection)
+        worker.stream_begin.connect(window.on_stream_begin, Qt.ConnectionType.QueuedConnection)
+        worker.stream_token.connect(window.on_stream_chunk, Qt.ConnectionType.QueuedConnection)
+        worker.stream_end.connect(window.on_stream_end, Qt.ConnectionType.QueuedConnection)
         
         # Listener signals -> UI (crash-safe)
         listener.state_changed.connect(window.orb.set_state, Qt.ConnectionType.QueuedConnection)
@@ -105,12 +112,26 @@ def main():
                 try:
                     import time as _t
                     t0 = _t.time()
-                    response = orchestrator.process_command(command_text)
+
+                    _streamed = [False]
+
+                    def on_begin():
+                        _streamed[0] = True
+                        worker.stream_begin.emit()
+
+                    response = orchestrator.process_command(
+                        command_text,
+                        token_callback=lambda t: worker.stream_token.emit(t),
+                        begin_callback=on_begin,
+                    )
                     t1 = _t.time()
-                    
-                    # Show in terminal
-                    worker.output_ready.emit(f"Response: {response}")
-                    
+
+                    if _streamed[0]:
+                        worker.stream_end.emit()
+                    else:
+                        # Non-streamed response (meta-commands etc.) — show in UI
+                        worker.output_ready.emit(f"Response: {response}")
+
                     # TTS
                     if response and not response.startswith("Error"):
                         listener.set_processing(True)
@@ -123,6 +144,7 @@ def main():
                 except Exception as e:
                     logging.error(f"Process Error: {e}", exc_info=True)
                     clr.print_error(str(e))
+                    worker.stream_end.emit()
                     worker.output_ready.emit(f"Error: {e}")
 
             threading.Thread(target=process, daemon=True).start()
@@ -138,6 +160,28 @@ def main():
 
         # Start autonomous listening
         listener.start()
+
+        # Command Confirmation Logic
+        confirm_event = threading.Event()
+        confirm_result = {"approved": False}
+
+        def on_confirm_response(approved):
+            confirm_result["approved"] = approved
+            confirm_event.set()
+
+        window.confirm_response.connect(on_confirm_response)
+
+        def request_confirmation(command):
+            confirm_result["approved"] = False
+            confirm_event.clear()
+            worker.confirm_request.emit(command)
+            confirm_event.wait() # Wait for UI to set the event
+            return confirm_result["approved"]
+
+        orchestrator._confirm_callback = request_confirmation
+        
+        # Connect UI request to window
+        worker.confirm_request.connect(window.show_confirmation_dialog)
 
         sys.exit(app.exec())
 

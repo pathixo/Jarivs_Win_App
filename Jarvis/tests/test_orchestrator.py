@@ -215,6 +215,48 @@ class TestOrchestrator(unittest.TestCase):
         self.assertIn("Recommended Voices", response)
         self.assertIn("en-GB-RyanNeural", response)
 
+    # ── Shell Control Tests ──────────────────────────────────────────────
+
+    def test_shell_status_command(self):
+        response = self.orchestrator.process_command("shell status")
+        self.assertIn("Shell Settings", response)
+        self.assertIn("Confirmation Mode: OFF", response)
+        self.assertIn("WSL Sandbox Mode:  OFF", response)
+
+    def test_shell_confirmation_toggle(self):
+        response = self.orchestrator.process_command("shell confirmation on")
+        self.assertTrue(self.orchestrator.confirmation_mode)
+        self.assertIn("turned ON", response)
+        
+        response = self.orchestrator.process_command("shell confirmation off")
+        self.assertFalse(self.orchestrator.confirmation_mode)
+        self.assertIn("turned OFF", response)
+
+    def test_shell_wsl_toggle(self):
+        response = self.orchestrator.process_command("shell wsl on")
+        self.assertTrue(self.orchestrator.wsl_mode)
+        self.assertIn("turned ON", response)
+        
+        response = self.orchestrator.process_command("shell wsl off")
+        self.assertFalse(self.orchestrator.wsl_mode)
+        self.assertIn("turned OFF", response)
+
+    def test_shell_confirmation_logic(self):
+        """If confirmation mode is ON, command should wait for callback."""
+        self.orchestrator.confirmation_mode = True
+        mock_callback = MagicMock(return_value=False)
+        self.orchestrator._confirm_callback = mock_callback
+        
+        response = self.orchestrator.process_command("echo hello")
+        mock_callback.assert_called_with("echo hello")
+        self.assertIn("cancelled by user", response)
+        
+        mock_callback.return_value = True
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="hello", stderr="", returncode=0)
+            response = self.orchestrator.process_command("echo hello")
+            self.assertIn("hello", response)
+
 
 if __name__ == '__main__':
     unittest.main()

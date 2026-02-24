@@ -220,6 +220,22 @@ def print_debug(text: str) -> None:
     print(debug(text))
 
 
+def print_ai_start() -> None:
+    """Print the [JARVIS] prefix for a streaming response (no newline)."""
+    tag_str = _wrap(f"{C.BOLD}{C.BRIGHT_GREEN}", "[JARVIS]")
+    print(f"{tag_str} ", end="", flush=True)
+
+
+def print_ai_token(text: str) -> None:
+    """Print a single streaming token inline (no newline, no prefix)."""
+    print(ai_response(text), end="", flush=True)
+
+
+def print_ai_end() -> None:
+    """End a streaming response with a newline."""
+    print()
+
+
 def print_status(tag: str, text: str) -> None:
     """Print a status label."""
     print(label(tag, text, C.BRIGHT_MAGENTA))
