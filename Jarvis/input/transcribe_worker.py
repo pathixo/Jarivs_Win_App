@@ -49,6 +49,7 @@ def main():
                 wav_path,
                 beam_size=1,
                 language=lang,  # None = auto-detect, "en" = English, "hi" = Hindi, etc.
+                initial_prompt="Jarvis open browser terminal script create folder file help status stop minimize quit spotify instagram chrome youtube netflix whatsapp",
             )
             segments_list = list(segments)
             text = " ".join([s.text for s in segments_list]).strip()

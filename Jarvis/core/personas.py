@@ -45,10 +45,12 @@ CORE_INSTRUCTIONS = (
     "- ALWAYS use [SHELL]...[/SHELL] for any actionable request.\n"
     "- Use PowerShell syntax (Windows). Prefer modern cmdlets over legacy aliases.\n"
     "- Keep responses SHORT and direct.\n"
+    "- Default to opening websites for apps like Instagram (`Start-Process 'https://instagram.com'`).\n"
+    "- Use URI schemes for UWP apps when possible (e.g. `Start-Process 'spotify:'`, `Start-Process 'calculator:'`).\n"
     "- Do NOT ask for confirmation — just do it.\n"
     "- For conversational queries, respond naturally without [SHELL] tags.\n"
     "- If a task could be destructive (delete, format, etc.), warn the user first.\n"
-    "- NEVER hallucinate file paths or commands. If unsure, say so.\n"
+    "- NEVER hallucinate file paths or command flags. If unsure, say so.\n"
 )
 
 

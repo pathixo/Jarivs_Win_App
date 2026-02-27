@@ -331,17 +331,25 @@ class Orchestrator:
             else:
                 results.append(f"Done: {cmd}")
 
-            # Error auto-recovery (non-streaming only to avoid nesting issues)
+            # Error auto-recovery
             is_error = shell_output.startswith("Error:") or shell_output.startswith("Shell Error:")
-            if is_error and depth < 2 and not token_callback:
+            if is_error and depth < 2:
                 clr.print_warning(f"Command failed. Auto-recovering (attempt {depth + 1}/2)...")
+                if token_callback:
+                    token_callback("\n\n[Auto-recovering from error...]\n\n")
+                
                 recovery_prompt = (
                     f"The command `{cmd}` failed with the following output:\n"
                     f"{shell_output}\n\n"
                     "Please analyze the error, explain what went wrong briefly, "
                     "and provide a corrected command wrapped in [SHELL] tags."
                 )
-                recovery_result = self._process_with_llm(recovery_prompt, depth=depth + 1)
+                recovery_result = self._process_with_llm(
+                    recovery_prompt, 
+                    depth=depth + 1,
+                    token_callback=token_callback,
+                    begin_callback=None
+                )
                 results.append(f"--- Auto-Recovery ---\n{recovery_result}")
 
         return "\n".join(results)
