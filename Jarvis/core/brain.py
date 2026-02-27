@@ -460,6 +460,27 @@ class _GroqBackend:
                     continue
 
     def health_check(self) -> bool:
+        if not self._api_key:
+            return False
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def list_models(self) -> tuple[bool, list[str] | str]:
+        if not self._api_key:
+            return False, "Groq API key not configured."
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+            r.raise_for_status()
+            models = r.json().get("data", [])
+            names = [m.get("id", "") for m in models]
+            return True, names
+        except Exception as e:
+            return False, f"Could not fetch Groq models: {e}"
 
 
 class _GrokBackend:
@@ -552,6 +573,27 @@ class _GrokBackend:
                     continue
 
     def health_check(self) -> bool:
+        if not self._api_key:
+            return False
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.x.ai/v1/models", headers=headers, timeout=10)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def list_models(self) -> tuple[bool, list[str] | str]:
+        if not self._api_key:
+            return False, "Grok API key not configured."
+        try:
+            headers = {"Authorization": f"Bearer {self._api_key}"}
+            r = requests.get("https://api.x.ai/v1/models", headers=headers, timeout=10)
+            r.raise_for_status()
+            models = r.json().get("data", [])
+            names = [m.get("id", "") for m in models]
+            return True, names
+        except Exception as e:
+            return False, f"Could not fetch Grok models: {e}"
 
 
 # ─────────────────────────── Brain ──────────────────────────────────────────
@@ -598,6 +640,7 @@ class Brain:
         r"\b(explain|why\s+does|how\s+does|analyze|analyse|compare|debug|fix|write|implement|refactor|design)\b",
         r"\b(algorithm|function|class|module|architecture|pattern|code|script|program)\b",
         r"\b(step.{0,5}by.{0,5}step|in\s+detail|comprehensively|complex|reason)\b",
+        r"\b(and\s+then|search|play|create|download|multi|sequence)\b",
     ]
 
     def generate_response_stream(self, text: str, history: list[dict] | None = None):
