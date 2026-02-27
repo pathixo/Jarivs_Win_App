@@ -28,9 +28,18 @@ def _make_mock_persona(name="witty", display_name="Witty JARVIS",
 
 class TestOrchestrator(unittest.TestCase):
     def setUp(self):
-        # Patch Brain to avoid real LLM calls during tests
-        with patch("Jarvis.core.orchestrator.Brain"):
+        # Patch Brain and get_backend to avoid real LLM/OS calls during tests
+        with patch("Jarvis.core.orchestrator.Brain"), \
+             patch("Jarvis.core.orchestrator.get_backend") as mock_get_backend:
+            # Set up mock backend
+            mock_backend = MagicMock()
+            mock_backend.platform_name = "windows"
+            mock_backend.shell_name = "powershell"
+            mock_get_backend.return_value = mock_backend
+
             self.orchestrator = Orchestrator()
+            self.mock_backend = mock_backend
+
             # Set up mock brain with sensible defaults
             self.orchestrator.brain = MagicMock()
             self.orchestrator.brain.settings = MagicMock()
