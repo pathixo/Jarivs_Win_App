@@ -4,13 +4,15 @@ Orchestrator Module — Command Router & Execution Engine
 Central coordinator that receives user input and decides how to handle it:
 
   1. Meta-commands (llm/brain control)  →  Internal settings management
-  2. Direct shell patterns              →  PowerShell subprocess execution  
+  2. Direct shell patterns              →  Shell execution via ActionRouter
   3. Natural language                   →  Brain (LLM) processing
-     └─ LLM may return [SHELL] tags    →  Extracted and executed safely
+     └─ LLM may return [SHELL]/[ACTION] →  Routed through OS Abstraction Layer
 
 Features:
   - Structured intent classification
-  - Safety-aware shell execution with sandboxing
+  - OS Abstraction Layer (no direct subprocess calls)
+  - Safety-aware execution with SafetyEngine
+  - App Registry for reliable app launching
   - Conversation context awareness
   - Proper error handling and logging
   - Colorized terminal output
@@ -19,65 +21,90 @@ Features:
 
 import logging
 import re
-import subprocess
 import time
 from typing import Optional
 
 from Jarvis.core.brain import Brain, Provider
 from Jarvis.core.tools import Tools
 from Jarvis.core import colors as clr
+from Jarvis.core.system import (
+    get_backend, ActionRouter, extract_actions, RiskLevel,
+)
 
 logger = logging.getLogger("jarvis.orchestrator")
 
 
-# ─────────────────────────── Shell Stream Filter ────────────────────────────
+# ─────────────────────────── Tag Stream Filter ────────────────────────────
 
-class _ShellStreamFilter:
+class _TagStreamFilter:
     """
     Stateful filter for LLM token streams.
 
-    Strips [SHELL]...[/SHELL] tags in real-time so only conversational text
-    reaches the display callback. Extracted commands are stored in
-    self.shell_commands and executed after streaming completes.
+    Strips [SHELL]...[/SHELL] and [ACTION]...[/ACTION] tags in real-time
+    so only conversational text reaches the display callback.
+    Extracted commands/actions are stored and executed after streaming completes.
     """
 
-    _OPEN  = "[SHELL]"
-    _CLOSE = "[/SHELL]"
+    _TAGS = [
+        ("[SHELL]", "[/SHELL]"),
+        ("[ACTION]", "[/ACTION]"),
+    ]
 
     def __init__(self):
         self._buf       = ""   # partial tag detection lookahead buffer
-        self._in_shell  = False
-        self._shell_buf = ""   # accumulates the shell command text
+        self._in_tag    = False
+        self._tag_type  = None  # which tag we're currently inside
+        self._close_tag = None  # the closing tag to look for
+        self._tag_buf   = ""   # accumulates the tag content
         self.shell_commands: list[str] = []
+        self.action_commands: list[str] = []
 
     def feed(self, text: str) -> str:
-        """Return the displayable portion of a token (empty when inside a SHELL block)."""
+        """Return the displayable portion of a token (empty when inside a tag block)."""
         display = ""
         for ch in text:
-            if not self._in_shell:
+            if not self._in_tag:
                 self._buf += ch
-                if self._OPEN in self._buf:
-                    idx = self._buf.index(self._OPEN)
-                    display += self._buf[:idx]
-                    self._buf = ""
-                    self._in_shell = True
-                elif not self._OPEN.startswith(self._buf):
+                # Check for any opening tag
+                matched = False
+                for open_tag, close_tag in self._TAGS:
+                    if open_tag in self._buf:
+                        idx = self._buf.index(open_tag)
+                        display += self._buf[:idx]
+                        self._buf = ""
+                        self._in_tag = True
+                        self._tag_type = open_tag
+                        self._close_tag = close_tag
+                        matched = True
+                        break
+                if matched:
+                    continue
+                # Check if buffer could still be a partial tag prefix
+                could_be_prefix = any(
+                    tag.startswith(self._buf) for tag, _ in self._TAGS
+                )
+                if not could_be_prefix:
                     display += self._buf
                     self._buf = ""
             else:
-                self._shell_buf += ch
-                if self._CLOSE in self._shell_buf:
-                    idx = self._shell_buf.index(self._CLOSE)
-                    cmd = self._shell_buf[:idx].strip()
-                    if cmd:
-                        self.shell_commands.append(cmd)
-                    self._shell_buf = self._shell_buf[idx + len(self._CLOSE):]
-                    self._in_shell = False
+                self._tag_buf += ch
+                if self._close_tag in self._tag_buf:
+                    idx = self._tag_buf.index(self._close_tag)
+                    content = self._tag_buf[:idx].strip()
+                    if content:
+                        if self._tag_type == "[SHELL]":
+                            self.shell_commands.append(content)
+                        elif self._tag_type == "[ACTION]":
+                            self.action_commands.append(content)
+                    self._tag_buf = self._tag_buf[idx + len(self._close_tag):]
+                    self._in_tag = False
+                    self._tag_type = None
+                    self._close_tag = None
         return display
 
     def flush(self) -> str:
         """Flush any buffered display text at end of stream."""
-        if not self._in_shell:
+        if not self._in_tag:
             result, self._buf = self._buf, ""
             return result
         return ""
@@ -134,13 +161,17 @@ class Orchestrator:
         self.wsl_mode = False           # Run risky/all commands in WSL
         self._confirm_callback = None   # Callback(command_text) -> bool
 
+        # OS Abstraction Layer
+        self._backend = get_backend()
+        self.action_router = ActionRouter(self._backend)
+
         # Apply initial persona voice to TTS
         if self.tts:
             active = self.brain.personas.get_active()
             self.tts.set_voice(active.voice)
             self.tts.set_rate(active.tts_rate)
 
-        logger.info("Orchestrator initialized")
+        logger.info("Orchestrator initialized | platform=%s", self._backend.platform_name)
 
     # ── Main Entry Point ────────────────────────────────────────────────────
 
@@ -244,11 +275,11 @@ class Orchestrator:
         begin_callback=None,
     ) -> str:
         """
-        Send to Brain, stream/parse response, execute any [SHELL] commands found.
+        Send to Brain, stream/parse response, execute any [SHELL]/[ACTION] commands found.
 
         When token_callback is provided the response is streamed token-by-token
-        with [SHELL] tags filtered out in real-time. Shell commands collected by
-        the filter are executed after streaming completes.
+        with [SHELL]/[ACTION] tags filtered out in real-time. Commands collected
+        by the filter are executed after streaming completes.
         """
         t0 = time.time()
         clr.print_debug("  Thinking...")
@@ -258,7 +289,7 @@ class Orchestrator:
             if begin_callback:
                 begin_callback()
 
-            stream_filter = _ShellStreamFilter()
+            stream_filter = _TagStreamFilter()
             llm_response = ""
 
             clr.print_ai_start()
@@ -276,10 +307,12 @@ class Orchestrator:
             clr.print_ai_end()
 
             shell_commands = stream_filter.shell_commands
+            action_commands = stream_filter.action_commands
         else:
             # ── Non-streaming path (fallback) ───────────────────────────
             llm_response = self.brain.generate_response(command_text)
             shell_commands = re.findall(r'\[SHELL\](.*?)\[/SHELL\]', llm_response, re.DOTALL)
+            action_commands = re.findall(r'\[ACTION\](.*?)\[/ACTION\]', llm_response, re.DOTALL)
 
         elapsed = time.time() - t0
         clr.print_debug(f"  Response in {elapsed:.2f}s")
@@ -289,14 +322,15 @@ class Orchestrator:
             clr.print_error("No response received.")
             return "I didn't get a response. Please try again."
 
-        if not shell_commands:
+        if not shell_commands and not action_commands:
             # Pure conversational response
             if not token_callback:
                 clr.print_ai(llm_response)
             return llm_response
 
-        # Conversational part (outside [SHELL] tags) — for TTS
-        clean_text = re.sub(r'\[SHELL\].*?\[/SHELL\]', '', llm_response, flags=re.DOTALL).strip()
+        # Conversational part (outside tags) — for TTS
+        clean_text = re.sub(r'\[SHELL\].*?\[/SHELL\]', '', llm_response, flags=re.DOTALL)
+        clean_text = re.sub(r'\[ACTION\].*?\[/ACTION\]', '', clean_text, flags=re.DOTALL).strip()
 
         results = []
         if clean_text:
@@ -304,13 +338,35 @@ class Orchestrator:
                 clr.print_ai(clean_text)
             results.append(clean_text)
 
+        # Execute [ACTION] tags via ActionRouter
+        for action_str in action_commands:
+            action_str = action_str.strip()
+            if not action_str:
+                continue
+
+            from Jarvis.core.system.action_router import parse_action_tag
+            action_req = parse_action_tag(action_str)
+            if action_req:
+                logger.info("Executing LLM action: %s -> %s", action_req.action_type.value, action_req.target)
+                clr.print_info(f"  Action: {action_req.action_type.value} -> {action_req.target}")
+                action_result = self.action_router.execute_action(action_req)
+                self.brain.memory.add("system", f"Action result: {action_result.message}")
+                if action_result.output and action_result.output != action_result.message:
+                    results.append(f"Output:\n{action_result.output}")
+                else:
+                    results.append(action_result.message)
+            else:
+                logger.warning("Could not parse action: %s", action_str)
+                results.append(f"Unknown action: {action_str}")
+
+        # Execute [SHELL] tags via ActionRouter
         for cmd in shell_commands:
             cmd = cmd.strip()
             if not cmd:
                 continue
 
-            # Safety check
-            if self._is_dangerous_command(cmd):
+            # Safety check via SafetyEngine (delegated to ActionRouter)
+            if self.action_router.is_dangerous(cmd):
                 logger.warning("Dangerous command blocked: %s", cmd)
                 msg = f"Blocked dangerous command: `{cmd}`. Please run manually if intended."
                 clr.print_warning(f"⚠️  {msg}")
@@ -358,10 +414,13 @@ class Orchestrator:
 
     def _execute_shell(self, command: str, from_llm: bool = False) -> str:
         """
-        Execute a command in PowerShell subprocess.
-        
+        Execute a command via the OS Abstraction Layer.
+
+        Routes through ActionRouter → SystemBackend instead of calling
+        subprocess directly. Preserves confirmation mode and WSL routing.
+
         Args:
-            command: The PowerShell command to run.
+            command: The shell command to run.
             from_llm: If True, this command came from LLM output (extra safety).
         """
         # Confirmation Mode
@@ -374,89 +433,27 @@ class Orchestrator:
         # WSL Sandbox override
         if self.wsl_mode:
             logger.info("Routing command to WSL: %s", command)
-            # Simple wsl wrapper. Note: might fail for Windows-specific paths/commands
             command = f"wsl -- {command}"
 
-        logger.info("Shell exec%s: %s", " (from LLM)" if from_llm else "", command)
+        # Execute via ActionRouter (which delegates to SystemBackend)
+        result = self.action_router.execute_shell(command, from_llm=from_llm)
 
-        try:
-            # Decide wrapper based on command content (crude WSL routing if not forced)
-            shell_args = ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-            if command.startswith("wsl -- "):
-                shell_args = ["wsl", "--", command[7:]]
+        # Format output for display
+        final_out = str(result)
 
-            result = subprocess.run(
-                shell_args,
-                capture_output=True,
-                text=True,
-                timeout=30,  # Hard timeout to prevent hanging
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+        if result.success and final_out == "Command executed.":
+            clr.print_info("Command executed.")
+        elif final_out:
+            clr.print_shell_output(final_out)
 
-            output = result.stdout.strip()
-            error = result.stderr.strip()
+        if self.worker:
+            self.worker.output_ready.emit(final_out)
 
-            final_out = ""
-            if output:
-                final_out += output
-            if error:
-                # Filter out common PowerShell noise
-                if not self._is_noise(error):
-                    final_out += f"\nError: {error}" if final_out else f"Error: {error}"
+        # Truncate for TTS if needed
+        if len(final_out) > MAX_OUTPUT_LENGTH:
+            return final_out[:MAX_TTS_LENGTH] + "... (output truncated)"
 
-            if not final_out:
-                final_out = "Command executed."
-                clr.print_info("Command executed.")
-            else:
-                # Print output with shell output color
-                clr.print_shell_output(final_out)
-
-            if self.worker:
-                self.worker.output_ready.emit(final_out)
-
-            # Truncate for TTS if needed
-            if len(final_out) > MAX_OUTPUT_LENGTH:
-                return final_out[:MAX_TTS_LENGTH] + "... (output truncated)"
-
-            return final_out
-
-        except subprocess.TimeoutExpired:
-            msg = "Command timed out after 30 seconds."
-            logger.warning("Shell command timed out: %s", command)
-            clr.print_warning(msg)
-            return msg
-        except FileNotFoundError:
-            msg = "Error: PowerShell not found. Is it installed?"
-            clr.print_error(msg)
-            return msg
-        except Exception as e:
-            logger.error("Shell execution error: %s", e)
-            clr.print_error(f"Shell Error: {e}")
-            return f"Shell Error: {e}"
-
-    # ── Safety ──────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _is_dangerous_command(command: str) -> bool:
-        """Check if a command could be destructive."""
-        for pattern in DANGEROUS_PATTERNS:
-            if re.search(pattern, command, re.IGNORECASE):
-                return True
-        return False
-
-    @staticmethod
-    def _is_noise(stderr: str) -> bool:
-        """Filter out non-error PowerShell stderr output."""
-        noise_patterns = [
-            r"^WARNING:",
-            r"^VERBOSE:",
-            r"^DEBUG:",
-            r"^ProgressPreference",
-        ]
-        for pattern in noise_patterns:
-            if re.search(pattern, stderr, re.IGNORECASE):
-                return True
-        return False
+        return final_out
 
     def _request_confirmation(self, command: str) -> bool:
         """
