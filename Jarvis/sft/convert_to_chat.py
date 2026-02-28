@@ -82,4 +82,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     count = convert_file(args.input, args.output, args.system_prompt)
-    print(f"Converted {count} examples → {args.output}")
+    print(f"Converted {count} examples -> {args.output}")
