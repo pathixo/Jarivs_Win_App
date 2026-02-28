@@ -88,7 +88,7 @@ def train(args):
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         quantization_config=bnb_config,
-        device_map="auto",
+        device_map={"": 0},
         trust_remote_code=True,
     )
 
@@ -171,7 +171,7 @@ def train(args):
         lr_scheduler_type="cosine",
         report_to="none",
         max_grad_norm=0.3,
-        max_length=512,
+        max_length=1024,
         dataset_text_field="text",
     )
 

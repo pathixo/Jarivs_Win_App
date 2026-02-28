@@ -29,6 +29,11 @@ LAUNCH_TEMPLATES = [
     "I need {app}",
     "open up {app} please",
     "start {app} please",
+    "could you launch {app}",
+    "bring up {app}",
+    "I want to use {app}",
+    "start up {app}",
+    "{app} please",
 ]
 
 LAUNCH_RESPONSES = [
@@ -37,6 +42,8 @@ LAUNCH_RESPONSES = [
     "Firing up {display}.",
     "Starting {display}.",
     "{display} is on its way.",
+    "Right away. Opening {display}.",
+    "Got it. Launching {display}.",
 ]
 
 URL_TEMPLATES = [
@@ -47,12 +54,18 @@ URL_TEMPLATES = [
     "open {app} in my browser",
     "I want to check {app}",
     "navigate to {app}",
+    "pull up {app}",
+    "can we go to {app}",
+    "show me {app}",
+    "open exactly {app}",
 ]
 
 URL_RESPONSES = [
     "Opening {display}.",
     "Navigating to {display}.",
     "Taking you to {display}.",
+    "Right away. Opening {display}.",
+    "Here is {display}.",
 ]
 
 SHELL_SAFE_EXAMPLES = [
@@ -117,10 +130,10 @@ CRITICAL_TEMPLATES = [
      "reason": "Secure disk wipe"},
 ]
 
-FOLDER_NAMES = ["Downloads", "Documents", "Desktop", "temp", "old_files", "backup", "test_data"]
-SERVICE_NAMES = ["Windows Update", "Print Spooler", "Defender", "Firewall"]
-DRIVE_LETTERS = ["C", "D", "E"]
-RANDOM_NAMES = ["Projects", "Work", "Notes", "Archive", "Data", "Reports", "Logs"]
+FOLDER_NAMES = ["Downloads", "Documents", "Desktop", "temp", "old_files", "backup", "test_data", "Pictures", "Music", "Videos", "Source", "cache"]
+SERVICE_NAMES = ["Windows Update", "Print Spooler", "Defender", "Firewall", "Bluetooth", "Audio", "WLAN AutoConfig", "Xbox Live"]
+DRIVE_LETTERS = ["C", "D", "E", "F", "G", "Z", "X"]
+RANDOM_NAMES = ["Projects", "Work", "Notes", "Archive", "Data", "Reports", "Logs", "Personal", "Drafts", "Finals", "Taxes2025"]
 
 
 def load_app_registry() -> dict:
@@ -130,71 +143,83 @@ def load_app_registry() -> dict:
         return json.load(f)
 
 
-def generate_app_examples(registry: dict, count: int) -> list[dict]:
+def generate_app_examples(registry: dict, target_count: int, seen_inputs: set) -> list[dict]:
     """Generate app launch and URL open examples from registry."""
     examples = []
+    app_items = list(registry.items())
+    
+    attempts = 0
     idx = 0
-
-    for app_key, app_data in registry.items():
+    while len(examples) < target_count and attempts < target_count * 10:
+        attempts += 1
+        app_key, app_data = random.choice(app_items)
         display = app_data["display_name"]
         aliases = app_data.get("aliases", [app_key])
+        alias = random.choice(aliases)
         method = app_data.get("launch_method", "exe")
         target = app_data.get("launch_target", app_key)
 
-        for alias in aliases:
-            if idx >= count:
-                return examples
-
-            if method == "url":
-                # URL-based apps
-                template = random.choice(URL_TEMPLATES)
-                response = random.choice(URL_RESPONSES)
-                examples.append({
-                    "id": f"gen_url_{idx:04d}",
-                    "split": random.choice(["train", "train", "train", "val"]),
-                    "scenario": "url_open",
-                    "user_input": template.format(app=alias),
-                    "assistant_text": response.format(display=display),
-                    "action_tags": [f"open_url: {target}"],
-                    "shell_tags": [],
-                    "risk_level": "low",
-                    "requires_confirmation": False,
-                    "should_block": False,
-                    "expected_outcome": "executed",
-                })
-            else:
-                # App launch (exe/uri)
-                template = random.choice(LAUNCH_TEMPLATES)
-                response = random.choice(LAUNCH_RESPONSES)
-                examples.append({
-                    "id": f"gen_app_{idx:04d}",
-                    "split": random.choice(["train", "train", "train", "val"]),
-                    "scenario": "app_launch",
-                    "user_input": template.format(app=alias),
-                    "assistant_text": response.format(display=display),
-                    "action_tags": [f"launch_app: {app_key}"],
-                    "shell_tags": [],
-                    "risk_level": "low",
-                    "requires_confirmation": False,
-                    "should_block": False,
-                    "expected_outcome": "executed",
-                })
+        if method == "url":
+            template = random.choice(URL_TEMPLATES)
+            user_input = template.format(app=alias)
+            if user_input in seen_inputs: continue
+            seen_inputs.add(user_input)
+            response = random.choice(URL_RESPONSES)
+            examples.append({
+                "id": f"gen_url_{idx:04d}",
+                "split": random.choice(["train", "train", "train", "val"]),
+                "scenario": "url_open",
+                "user_input": user_input,
+                "assistant_text": response.format(display=display),
+                "action_tags": [f"open_url: {target}"],
+                "shell_tags": [],
+                "risk_level": "low",
+                "requires_confirmation": False,
+                "should_block": False,
+                "expected_outcome": "executed",
+            })
+            idx += 1
+        else:
+            template = random.choice(LAUNCH_TEMPLATES)
+            user_input = template.format(app=alias)
+            if user_input in seen_inputs: continue
+            seen_inputs.add(user_input)
+            response = random.choice(LAUNCH_RESPONSES)
+            examples.append({
+                "id": f"gen_app_{idx:04d}",
+                "split": random.choice(["train", "train", "train", "val"]),
+                "scenario": "app_launch",
+                "user_input": user_input,
+                "assistant_text": response.format(display=display),
+                "action_tags": [f"launch_app: {app_key}"],
+                "shell_tags": [],
+                "risk_level": "low",
+                "requires_confirmation": False,
+                "should_block": False,
+                "expected_outcome": "executed",
+            })
             idx += 1
 
     return examples
 
 
-def generate_shell_examples(count: int) -> list[dict]:
+def generate_shell_examples(count: int, seen_inputs: set) -> list[dict]:
     """Generate safe shell command examples."""
     examples = []
-    for i in range(count):
+    attempts = 0
+    idx = 0
+    while len(examples) < count and attempts < count * 10:
+        attempts += 1
         base = random.choice(SHELL_SAFE_EXAMPLES)
         name = random.choice(RANDOM_NAMES)
+        user_input = base["input"].format(name=name)
+        if user_input in seen_inputs: continue
+        seen_inputs.add(user_input)
         examples.append({
-            "id": f"gen_shell_{i:04d}",
+            "id": f"gen_shell_{idx:04d}",
             "split": random.choice(["train", "train", "train", "val"]),
             "scenario": "shell_safe",
-            "user_input": base["input"].format(name=name),
+            "user_input": user_input,
             "assistant_text": base["response"].format(name=name),
             "action_tags": [],
             "shell_tags": [base["cmd"].format(name=name)],
@@ -203,21 +228,28 @@ def generate_shell_examples(count: int) -> list[dict]:
             "should_block": False,
             "expected_outcome": "executed",
         })
+        idx += 1
     return examples
 
 
-def generate_danger_examples(count: int) -> list[dict]:
+def generate_danger_examples(count: int, seen_inputs: set) -> list[dict]:
     """Generate dangerous command examples (HIGH risk, confirmation required)."""
     examples = []
-    for i in range(count):
+    attempts = 0
+    idx = 0
+    while len(examples) < count and attempts < count * 10:
+        attempts += 1
         base = random.choice(DANGEROUS_TEMPLATES)
         folder = random.choice(FOLDER_NAMES)
         service = random.choice(SERVICE_NAMES)
+        user_input = base["input"].format(folder=folder, service=service)
+        if user_input in seen_inputs: continue
+        seen_inputs.add(user_input)
         examples.append({
-            "id": f"gen_danger_{i:04d}",
+            "id": f"gen_danger_{idx:04d}",
             "split": random.choice(["train", "train", "val"]),
             "scenario": "shell_dangerous",
-            "user_input": base["input"].format(folder=folder, service=service),
+            "user_input": user_input,
             "assistant_text": base["response"].format(folder=folder, service=service),
             "action_tags": [],
             "shell_tags": [],
@@ -226,20 +258,27 @@ def generate_danger_examples(count: int) -> list[dict]:
             "should_block": False,
             "expected_outcome": "confirmed",
         })
+        idx += 1
     return examples
 
 
-def generate_critical_examples(count: int) -> list[dict]:
+def generate_critical_examples(count: int, seen_inputs: set) -> list[dict]:
     """Generate CRITICAL examples (always blocked, no tags)."""
     examples = []
-    for i in range(count):
+    attempts = 0
+    idx = 0
+    while len(examples) < count and attempts < count * 10:
+        attempts += 1
         base = random.choice(CRITICAL_TEMPLATES)
         drive = random.choice(DRIVE_LETTERS)
+        user_input = base["input"].format(drive=drive)
+        if user_input in seen_inputs: continue
+        seen_inputs.add(user_input)
         examples.append({
-            "id": f"gen_critical_{i:04d}",
+            "id": f"gen_critical_{idx:04d}",
             "split": random.choice(["train", "train", "val"]),
             "scenario": "shell_critical",
-            "user_input": base["input"].format(drive=drive),
+            "user_input": user_input,
             "assistant_text": base["response"].format(drive=drive),
             "action_tags": [],
             "shell_tags": [],
@@ -248,19 +287,26 @@ def generate_critical_examples(count: int) -> list[dict]:
             "should_block": True,
             "expected_outcome": "blocked",
         })
+        idx += 1
     return examples
 
 
-def generate_conversational_examples(count: int) -> list[dict]:
+def generate_conversational_examples(count: int, seen_inputs: set) -> list[dict]:
     """Generate conversational examples (no tags)."""
     examples = []
-    for i in range(count):
+    attempts = 0
+    idx = 0
+    while len(examples) < count and attempts < count * 10:
+        attempts += 1
         base = random.choice(CONVERSATIONAL_EXAMPLES)
+        user_input = base["input"]
+        if user_input in seen_inputs: continue
+        seen_inputs.add(user_input)
         examples.append({
-            "id": f"gen_conv_{i:04d}",
+            "id": f"gen_conv_{idx:04d}",
             "split": random.choice(["train", "train", "train", "val"]),
             "scenario": "conversational",
-            "user_input": base["input"],
+            "user_input": user_input,
             "assistant_text": base["response"],
             "action_tags": [],
             "shell_tags": [],
@@ -269,12 +315,28 @@ def generate_conversational_examples(count: int) -> list[dict]:
             "should_block": False,
             "expected_outcome": "conversational",
         })
+        idx += 1
     return examples
 
 
 def generate_dataset(total_count: int, output_path: str) -> None:
     """Generate a balanced dataset with the target count of examples."""
     registry = load_app_registry()
+    
+    seen_inputs = set()
+    all_examples = []
+    
+    # Load seed data
+    seed_path = Path(__file__).parent / "seed_dataset.jsonl"
+    if seed_path.exists():
+        with open(seed_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    ex = json.loads(line)
+                    if ex["user_input"] not in seen_inputs:
+                        seen_inputs.add(ex["user_input"])
+                        all_examples.append(ex)
 
     # Distribution: 30% app, 10% url, 25% shell_safe, 15% danger, 5% critical, 15% conv
     n_app = int(total_count * 0.30)
@@ -284,50 +346,32 @@ def generate_dataset(total_count: int, output_path: str) -> None:
     n_critical = int(total_count * 0.05)
     n_conv = total_count - n_app - n_url - n_shell - n_danger - n_critical
 
-    all_examples = []
-    all_examples.extend(generate_app_examples(registry, n_app + n_url))
-    all_examples.extend(generate_shell_examples(n_shell))
-    all_examples.extend(generate_danger_examples(n_danger))
-    all_examples.extend(generate_critical_examples(n_critical))
-    all_examples.extend(generate_conversational_examples(n_conv))
-
-    # Load seed data
-    seed_path = Path(__file__).parent / "seed_dataset.jsonl"
-    if seed_path.exists():
-        with open(seed_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    all_examples.append(json.loads(line))
+    all_examples.extend(generate_app_examples(registry, n_app + n_url, seen_inputs))
+    all_examples.extend(generate_shell_examples(n_shell, seen_inputs))
+    all_examples.extend(generate_danger_examples(n_danger, seen_inputs))
+    all_examples.extend(generate_critical_examples(n_critical, seen_inputs))
+    all_examples.extend(generate_conversational_examples(n_conv, seen_inputs))
 
     # Shuffle
     random.shuffle(all_examples)
 
-    # Deduplicate by ID
-    seen_ids = set()
-    unique = []
-    for ex in all_examples:
-        if ex["id"] not in seen_ids:
-            seen_ids.add(ex["id"])
-            unique.append(ex)
-
     # Write
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
-        for ex in unique:
+        for ex in all_examples:
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
     # Stats
     scenarios = {}
     splits = {}
-    for ex in unique:
+    for ex in all_examples:
         scenarios[ex["scenario"]] = scenarios.get(ex["scenario"], 0) + 1
         splits[ex["split"]] = splits.get(ex["split"], 0) + 1
 
-    print(f"\nGenerated {len(unique)} examples → {output_path}")
+    print(f"\nGenerated {len(all_examples)} examples -> {output_path}")
     print(f"\nScenario distribution:")
     for s, c in sorted(scenarios.items()):
-        print(f"  {s:25s} {c:5d}  ({100*c/len(unique):.1f}%)")
+        print(f"  {s:25s} {c:5d}  ({100*c/len(all_examples):.1f}%)")
     print(f"\nSplit distribution:")
     for s, c in sorted(splits.items()):
         print(f"  {s:10s} {c:5d}")
