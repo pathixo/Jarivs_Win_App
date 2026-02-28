@@ -163,7 +163,10 @@ class Orchestrator:
 
         # OS Abstraction Layer
         self._backend = get_backend()
-        self.action_router = ActionRouter(self._backend)
+        self.action_router = ActionRouter(
+            self._backend,
+            confirm_callback=self._request_confirmation,
+        )
 
         # Apply initial persona voice to TTS
         if self.tts:
@@ -359,25 +362,23 @@ class Orchestrator:
                 logger.warning("Could not parse action: %s", action_str)
                 results.append(f"Unknown action: {action_str}")
 
-        # Execute [SHELL] tags via ActionRouter
+        # Execute [SHELL] tags via ActionRouter (unified safety gate)
         for cmd in shell_commands:
             cmd = cmd.strip()
             if not cmd:
-                continue
-
-            # Safety check via SafetyEngine (delegated to ActionRouter)
-            if self.action_router.is_dangerous(cmd):
-                logger.warning("Dangerous command blocked: %s", cmd)
-                msg = f"Blocked dangerous command: `{cmd}`. Please run manually if intended."
-                clr.print_warning(f"⚠️  {msg}")
-                self.brain.memory.add("system", msg)
-                results.append(msg)
                 continue
 
             logger.info("Executing LLM-generated shell command: %s", cmd)
             clr.print_shell(cmd)
 
             shell_output = self._execute_shell(cmd, from_llm=True)
+
+            # Check if command was blocked or denied
+            if "Blocked dangerous" in shell_output or "cancelled" in shell_output:
+                clr.print_warning(f"\u26a0\ufe0f  {shell_output}")
+                self.brain.memory.add("system", shell_output)
+                results.append(shell_output)
+                continue
 
             # Feed the output back into the LLM's memory
             self.brain.memory.add("system", f"Output of `{cmd}`:\n{shell_output}")
@@ -416,14 +417,15 @@ class Orchestrator:
         """
         Execute a command via the OS Abstraction Layer.
 
-        Routes through ActionRouter → SystemBackend instead of calling
-        subprocess directly. Preserves confirmation mode and WSL routing.
+        Routes through ActionRouter → SystemBackend. The ActionRouter
+        handles all safety decisions (block CRITICAL, confirm HIGH).
+        Confirmation mode adds blanket confirmation for ALL commands.
 
         Args:
             command: The shell command to run.
             from_llm: If True, this command came from LLM output (extra safety).
         """
-        # Confirmation Mode
+        # Blanket confirmation mode (asks even for safe commands)
         if self.confirmation_mode:
             if not self._request_confirmation(command):
                 msg = f"Command cancelled by user: `{command}`"
@@ -438,8 +440,11 @@ class Orchestrator:
         # Execute via ActionRouter (which delegates to SystemBackend)
         result = self.action_router.execute_shell(command, from_llm=from_llm)
 
-        # Format output for display
-        final_out = str(result)
+        # Format output for display — use message for blocked/denied commands
+        if not result.success:
+            final_out = result.message
+        else:
+            final_out = str(result)
 
         if result.success and final_out == "Command executed.":
             clr.print_info("Command executed.")
@@ -458,16 +463,18 @@ class Orchestrator:
     def _request_confirmation(self, command: str) -> bool:
         """
         Request user confirmation for a command.
-        Will use the callback if registered (UI), otherwise defaults to console if possible.
+        Uses the registered callback (UI dialog). Defaults to DENY if no
+        callback is wired — never auto-approve dangerous operations.
         """
         if self._confirm_callback:
             return self._confirm_callback(command)
-        
-        # Fallback (though orchestrator usually runs in non-interactive background)
-        print(f"\n[CONFIRM] Run this command? (y/n): {clr.shell(command)}")
-        # In a background thread without a terminal input, this might hang or fail.
-        # We really rely on the callback from main.py
-        return True # Default to True if no callback to avoid silent stalls
+
+        # Safe fallback: deny if no UI callback is available
+        logger.warning(
+            "No confirmation callback — denying command: %s", command
+        )
+        print(f"\n[DENIED] No confirmation callback for: {clr.shell(command)}")
+        return False
 
     # ── Meta-Commands (llm/brain control) ───────────────────────────────────
 
