@@ -1,17 +1,39 @@
-import subprocess
+"""
+Tools Module — Sandboxed File & Terminal Operations
+=====================================================
+Implements workspace-sandboxed file system and command operations.
+Delegates all OS interactions through the SystemBackend abstraction.
+"""
+
 import os
+from typing import Optional
+
+from Jarvis.core.system.backend import SystemBackend
+
 
 class Tools:
     """
     Implements local tools for file system and terminal operations.
     Enforces sandboxing within the 'workspace' directory.
+    Delegates to SystemBackend for all OS interactions.
     """
-    def __init__(self):
+    def __init__(self, backend: Optional[SystemBackend] = None):
         # Define workspace directory relative to project root
         self.workspace_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../workspace"))
         if not os.path.exists(self.workspace_dir):
             os.makedirs(self.workspace_dir)
             print(f"Created workspace directory at: {self.workspace_dir}")
+
+        # SystemBackend for OS operations (lazy-initialized if not provided)
+        self._backend = backend
+
+    @property
+    def backend(self) -> SystemBackend:
+        """Lazy-init backend if not provided at construction time."""
+        if self._backend is None:
+            from Jarvis.core.system import get_backend
+            self._backend = get_backend()
+        return self._backend
 
     def _is_safe_path(self, filepath):
         """
@@ -27,17 +49,13 @@ class Tools:
 
     def execute_terminal_command(self, command):
         """
-        Executes a shell command and returns output.
+        Executes a shell command via SystemBackend and returns output.
         """
-        try:
-            # Run in workspace directory
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, cwd=self.workspace_dir)
-            if result.returncode == 0:
-                return f"Output:\n{result.stdout}"
-            else:
-                return f"Error:\n{result.stderr}"
-        except Exception as e:
-            return f"Error executing command: {str(e)}"
+        result = self.backend.run_shell(command, cwd=self.workspace_dir)
+        if result.success:
+            return f"Output:\n{result.stdout}" if result.stdout else "Command executed."
+        else:
+            return f"Error:\n{result.error}" if result.error else f"Error:\n{result.message}"
     
     def list_files(self, directory="."):
         """
@@ -47,11 +65,10 @@ class Tools:
         if not safe:
             return "Error: Access denied. Path is outside workspace."
             
-        try:
-            files = os.listdir(abs_path)
-            return "\n".join(files)
-        except Exception as e:
-            return f"Error listing files: {str(e)}"
+        result = self.backend.list_dir(abs_path)
+        if result.success:
+            return result.output
+        return f"Error listing files: {result.error}"
     
     def read_file(self, filepath):
         """
@@ -61,11 +78,10 @@ class Tools:
         if not safe:
             return "Error: Access denied. Path is outside workspace."
 
-        try:
-            with open(abs_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception as e:
-            return f"Error reading file: {str(e)}"
+        result = self.backend.read_file(abs_path)
+        if result.success:
+            return result.output
+        return f"Error reading file: {result.error}"
 
     def write_file(self, filepath, content):
         """
@@ -75,9 +91,7 @@ class Tools:
         if not safe:
             return "Error: Access denied. Path is outside workspace."
 
-        try:
-            with open(abs_path, 'w', encoding='utf-8') as f:
-                f.write(content)
+        result = self.backend.write_file(abs_path, content)
+        if result.success:
             return f"File '{filepath}' written successfully."
-        except Exception as e:
-            return f"Error writing file: {str(e)}"
+        return f"Error writing file: {result.error}"

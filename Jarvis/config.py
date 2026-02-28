@@ -31,6 +31,13 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma:2b")
 
+# Ollama Model Auto-Selection
+# When enabled, Jarvis picks the fast model for simple queries and the logic
+# model for complex reasoning / code tasks.
+OLLAMA_FAST_MODEL  = os.getenv("OLLAMA_FAST_MODEL",  "gemma:2b")       # speed
+OLLAMA_LOGIC_MODEL = os.getenv("OLLAMA_LOGIC_MODEL", "llama3.2:3b")    # reasoning
+OLLAMA_AUTO_SELECT = os.getenv("OLLAMA_AUTO_SELECT", "true").lower() == "true"
+
 # Gemini Configuration (Google Cloud)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
@@ -55,6 +62,9 @@ WAKE_WORD = "jarvis"
 
 # TTS Voice
 TTS_VOICE = "en-US-GuyNeural"
+
+# Default Persona
+DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", "witty")
 
 # ─────────────────────── Paths ──────────────────────────────────────────────
 BASE_DIR = get_base_path()

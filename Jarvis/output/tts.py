@@ -5,8 +5,30 @@ import os
 from PyQt6.QtCore import QObject, pyqtSignal
 from Jarvis.config import TTS_VOICE
 
+
 class TTS(QObject):
     audio_generated = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._voice = TTS_VOICE
+        self._rate = "+15%"
+
+    # ── Voice Control ────────────────────────────────────────────────────
+
+    def set_voice(self, voice_id: str) -> None:
+        """Change the TTS voice (e.g., 'en-GB-RyanNeural')."""
+        self._voice = voice_id
+
+    def set_rate(self, rate: str) -> None:
+        """Change the TTS rate (e.g., '+10%', '-5%')."""
+        self._rate = rate
+
+    def get_voice(self) -> str:
+        """Return the current TTS voice ID."""
+        return self._voice
+
+    # ── Speech Synthesis ─────────────────────────────────────────────────
 
     def speak(self, text):
         """
@@ -28,11 +50,10 @@ class TTS(QObject):
         # Truncate long responses for TTS (speak only first ~200 chars)
         if len(text) > 250:
             text = text[:250] + "..."
-        
-        # Use +15% speed for snappier delivery
-        communicate = edge_tts.Communicate(text, TTS_VOICE, rate="+15%")
+
+        communicate = edge_tts.Communicate(text, self._voice, rate=self._rate)
         output_file = os.path.abspath("temp_tts.mp3")
         await communicate.save(output_file)
-        
+
         self.audio_generated.emit(output_file)
 

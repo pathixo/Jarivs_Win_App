@@ -34,14 +34,19 @@ from PyQt6.QtMultimedia import QMediaPlayer
 from Jarvis.ui.window import MainWindow
 from Jarvis.ui.tray import JarvisTrayIcon
 from Jarvis.core.orchestrator import Orchestrator
+from Jarvis.core import colors as clr
 from Jarvis.output.tts import TTS
 from Jarvis.input.listener import Listener
 
 
 class Worker(QObject):
     """Thread-safe bridge for UI updates from background threads."""
-    output_ready = pyqtSignal(str)
-    execute_ready = pyqtSignal(str, str)  # command, output
+    output_ready  = pyqtSignal(str)
+    execute_ready = pyqtSignal(str, str)   # command, output
+    stream_begin  = pyqtSignal()           # LLM stream starting
+    stream_token  = pyqtSignal(str)        # individual streamed token
+    stream_end    = pyqtSignal()           # LLM stream finished
+    confirm_request = pyqtSignal(str)     # command text
 
 
 def main():
@@ -49,16 +54,17 @@ def main():
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)  # Keep running when window hides
 
-        orchestrator = Orchestrator()
-        tts = TTS()
         worker = Worker()
 
         window = MainWindow()
         # Don't show immediately if we want silent start, but generally show on launch
         window.show()
 
+        tts = TTS()
         # Listener (fully autonomous)
         listener = Listener()
+
+        orchestrator = Orchestrator(worker=worker, tts=tts, listener=listener)
 
         # System Tray
         tray = JarvisTrayIcon()
@@ -79,6 +85,9 @@ def main():
 
         # Thread-safe UI connections
         worker.output_ready.connect(window.append_terminal_output, Qt.ConnectionType.QueuedConnection)
+        worker.stream_begin.connect(window.on_stream_begin, Qt.ConnectionType.QueuedConnection)
+        worker.stream_token.connect(window.on_stream_chunk, Qt.ConnectionType.QueuedConnection)
+        worker.stream_end.connect(window.on_stream_end, Qt.ConnectionType.QueuedConnection)
         
         # Listener signals -> UI (crash-safe)
         listener.state_changed.connect(window.orb.set_state, Qt.ConnectionType.QueuedConnection)
@@ -98,32 +107,44 @@ def main():
 
         def on_command_input(command_text):
             """Handle commands from terminal or voice."""
-            print(f"\n{'='*50}")
-            print(f"[CMD] Received: {command_text}")
 
             def process():
                 try:
                     import time as _t
                     t0 = _t.time()
-                    print(f"[LLM] Processing...")
-                    response = orchestrator.process_command(command_text)
+
+                    _streamed = [False]
+
+                    def on_begin():
+                        _streamed[0] = True
+                        worker.stream_begin.emit()
+
+                    response = orchestrator.process_command(
+                        command_text,
+                        token_callback=lambda t: worker.stream_token.emit(t),
+                        begin_callback=on_begin,
+                    )
                     t1 = _t.time()
-                    print(f"[LLM] Response in {t1-t0:.2f}s: {response[:100]}...")
-                    
-                    # Show in terminal
-                    worker.output_ready.emit(f"Response: {response}")
-                    
+
+                    if _streamed[0]:
+                        worker.stream_end.emit()
+                    else:
+                        # Non-streamed response (meta-commands etc.) — show in UI
+                        worker.output_ready.emit(f"Response: {response}")
+
                     # TTS
                     if response and not response.startswith("Error"):
                         listener.set_processing(True)
-                        print(f"[TTS] Speaking...")
+                        clr.print_debug(f"  TTS generating...")
                         tts.speak(response)
                         t2 = _t.time()
-                        print(f"[TTS] Audio generated in {t2-t1:.2f}s")
-                    print(f"[TOTAL] {_t.time()-t0:.2f}s")
-                    print(f"{'='*50}")
+                        clr.print_debug(f"  TTS ready in {t2-t1:.2f}s")
+                    clr.print_debug(f"  Total: {_t.time()-t0:.2f}s")
+                    print(clr.divider())
                 except Exception as e:
                     logging.error(f"Process Error: {e}", exc_info=True)
+                    clr.print_error(str(e))
+                    worker.stream_end.emit()
                     worker.output_ready.emit(f"Error: {e}")
 
             threading.Thread(target=process, daemon=True).start()
@@ -131,11 +152,36 @@ def main():
         # Connect voice commands to orchestrator (SINGLE connection)
         listener.command_received.connect(on_command_input, Qt.ConnectionType.QueuedConnection)
 
+        # Connect GUI typed commands to orchestrator (same pipeline as voice)
+        window.command_submitted.connect(on_command_input, Qt.ConnectionType.QueuedConnection)
+
         # TTS audio playback
         tts.audio_generated.connect(window.play_audio, Qt.ConnectionType.QueuedConnection)
 
         # Start autonomous listening
         listener.start()
+
+        # Command Confirmation Logic
+        confirm_event = threading.Event()
+        confirm_result = {"approved": False}
+
+        def on_confirm_response(approved):
+            confirm_result["approved"] = approved
+            confirm_event.set()
+
+        window.confirm_response.connect(on_confirm_response)
+
+        def request_confirmation(command):
+            confirm_result["approved"] = False
+            confirm_event.clear()
+            worker.confirm_request.emit(command)
+            confirm_event.wait() # Wait for UI to set the event
+            return confirm_result["approved"]
+
+        orchestrator._confirm_callback = request_confirmation
+        
+        # Connect UI request to window
+        worker.confirm_request.connect(window.show_confirmation_dialog)
 
         sys.exit(app.exec())
 

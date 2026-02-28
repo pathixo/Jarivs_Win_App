@@ -1,11 +1,11 @@
 @echo off
+chcp 65001 >nul 2>&1
 title Jarvis - Autonomous AI Assistant
-color 0A
 
 echo.
-echo  ══════════════════════════════════════════════════
-echo    JARVIS - Autonomous AI Assistant
-echo  ══════════════════════════════════════════════════
+echo  ======================================================
+echo     JARVIS - Autonomous AI Assistant
+echo  ======================================================
 echo.
 
 :: ─── Locate project directory ──────────────────────
@@ -26,13 +26,12 @@ if not exist ".env" (
     echo  Copying .env.example to .env ...
     if exist ".env.example" (
         copy ".env.example" ".env" >nul
-        echo  [INFO] .env created. Please edit it with your API keys.
-        echo  Opening .env in notepad...
+        echo  [INFO] .env created. Edit it with your API keys.
         start notepad ".env"
         pause
         exit /b 0
     ) else (
-        echo  [WARN] No .env.example found either. Continuing with defaults...
+        echo  [WARN] No .env.example found. Continuing with defaults...
     )
 )
 
@@ -42,7 +41,7 @@ if exist ".venv\Scripts\activate.bat" (
     call .venv\Scripts\activate.bat
 ) else (
     echo  [WARN] No .venv found. Running with system Python.
-    echo  Tip: python -m venv .venv ^&^& .venv\Scripts\activate ^&^& pip install -r Jarvis\requirements.txt
+    echo  Tip: python -m venv .venv ^& .venv\Scripts\activate ^& pip install -r Jarvis\requirements.txt
 )
 
 :: ─── Check dependencies ───────────────────────────
@@ -57,10 +56,17 @@ if %errorlevel% neq 0 (
     )
 )
 
+:: ─── Install colorama if missing ───────────────────
+python -c "import colorama" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo  [*] Installing colorama for colored output...
+    pip install colorama >nul 2>&1
+)
+
 :: ─── Launch Jarvis ─────────────────────────────────
 echo.
 echo  [*] Starting Jarvis...
-echo  ──────────────────────────────────────────────────
+echo  --------------------------------------------------
 echo.
 python -m Jarvis.main
 
