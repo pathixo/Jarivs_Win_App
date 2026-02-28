@@ -127,9 +127,15 @@ class ActionRouter:
     Applies safety checks before execution.
     """
 
-    def __init__(self, backend: SystemBackend, safety: Optional[SafetyEngine] = None):
+    def __init__(
+        self,
+        backend: SystemBackend,
+        safety: Optional[SafetyEngine] = None,
+        confirm_callback=None,
+    ):
         self.backend = backend
         self.safety = safety or SafetyEngine()
+        self._confirm_callback = confirm_callback  # callable(cmd) -> bool
         logger.info("ActionRouter initialized | platform=%s", backend.platform_name)
 
     # ── High-Level Dispatch ─────────────────────────────────────────────
@@ -180,15 +186,21 @@ class ActionRouter:
         cwd: Optional[str] = None,
     ) -> ShellResult:
         """
-        Execute a shell command with safety checks.
+        Execute a shell command with unified safety gate.
+
+        Safety pipeline (single source of truth):
+          1. CRITICAL → always blocked
+          2. HIGH/CRITICAL → requires user confirmation
+          3. Otherwise → execute directly
 
         This is the main entry point for [SHELL] tag commands and
         direct shell commands from the orchestrator.
         """
-        # Safety assessment
-        blocked, reason = self.safety.should_block(command)
-        if blocked:
-            logger.warning("Command blocked: %s — %s", command, reason)
+        risk, risk_desc = self.safety.assess_command(command)
+
+        # 1. Block CRITICAL commands outright
+        if risk == RiskLevel.CRITICAL:
+            logger.warning("Command blocked (CRITICAL): %s — %s", command, risk_desc)
             self.safety.log_action(
                 action_type=ActionType.SHELL_COMMAND.value,
                 target=command,
@@ -198,14 +210,35 @@ class ActionRouter:
             )
             return ShellResult(
                 success=False,
-                message=f"Blocked dangerous command: `{command}`. {reason}",
-                error=reason,
+                message=f"Blocked dangerous command: `{command}`. {risk_desc}",
+                error=risk_desc,
                 command=command,
-                action_type=ActionType.SHELL_COMMAND,
-                risk_level=RiskLevel.CRITICAL,
+                action_type=ActionType.SHELL_COMMAND.value,
+                risk_level=RiskLevel.CRITICAL.value,
             )
 
-        # Execute
+        # 2. Require confirmation for HIGH-risk commands
+        if risk == RiskLevel.HIGH:
+            approved = self._request_confirmation(command, risk_desc)
+            if not approved:
+                logger.info("Command denied by user: %s", command)
+                self.safety.log_action(
+                    action_type=ActionType.SHELL_COMMAND.value,
+                    target=command,
+                    risk=RiskLevel.HIGH,
+                    outcome="denied",
+                    from_llm=from_llm,
+                )
+                return ShellResult(
+                    success=False,
+                    message=f"Command cancelled (requires confirmation): `{command}`",
+                    error=f"User denied: {risk_desc}",
+                    command=command,
+                    action_type=ActionType.SHELL_COMMAND.value,
+                    risk_level=RiskLevel.HIGH.value,
+                )
+
+        # 3. Execute
         result = self.backend.run_shell(
             command=command,
             timeout=timeout,
@@ -214,7 +247,6 @@ class ActionRouter:
         )
 
         # Audit
-        risk, _ = self.safety.assess_command(command)
         self.safety.log_action(
             action_type=ActionType.SHELL_COMMAND.value,
             target=command[:80],
@@ -224,6 +256,19 @@ class ActionRouter:
         )
 
         return result
+
+    def _request_confirmation(self, command: str, reason: str) -> bool:
+        """
+        Ask for user confirmation via registered callback.
+        Defaults to DENY if no callback is registered (safe fallback).
+        """
+        if self._confirm_callback:
+            return self._confirm_callback(command)
+        logger.warning(
+            "No confirmation callback registered — denying dangerous command: %s",
+            command,
+        )
+        return False  # Safe default: deny if no UI is available
 
     # ── Action Handlers ─────────────────────────────────────────────────
 

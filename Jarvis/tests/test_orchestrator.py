@@ -10,6 +10,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from Jarvis.core.orchestrator import Orchestrator
+from Jarvis.core.system.actions import ShellResult
 
 
 def _make_mock_persona(name="witty", display_name="Witty JARVIS",
@@ -35,6 +36,11 @@ class TestOrchestrator(unittest.TestCase):
             mock_backend = MagicMock()
             mock_backend.platform_name = "windows"
             mock_backend.shell_name = "powershell"
+            # Default shell result for any command
+            mock_backend.run_shell.return_value = ShellResult(
+                success=True, message="hello", output="hello",
+                stdout="hello", stderr="", return_code=0, command="echo hello",
+            )
             mock_get_backend.return_value = mock_backend
 
             self.orchestrator = Orchestrator()
@@ -252,6 +258,8 @@ class TestOrchestrator(unittest.TestCase):
 
     def test_shell_confirmation_logic(self):
         """If confirmation mode is ON, command should wait for callback."""
+        from Jarvis.core.system.actions import ShellResult
+
         self.orchestrator.confirmation_mode = True
         mock_callback = MagicMock(return_value=False)
         self.orchestrator._confirm_callback = mock_callback
@@ -260,11 +268,14 @@ class TestOrchestrator(unittest.TestCase):
         mock_callback.assert_called_with("echo hello")
         self.assertIn("cancelled by user", response)
         
+        # When approved, command executes via mocked backend
         mock_callback.return_value = True
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="hello", stderr="", returncode=0)
-            response = self.orchestrator.process_command("echo hello")
-            self.assertIn("hello", response)
+        self.mock_backend.run_shell.return_value = ShellResult(
+            success=True, message="OK", output="hello", stdout="hello",
+            return_code=0, command="echo hello",
+        )
+        response = self.orchestrator.process_command("echo hello")
+        self.assertIn("hello", response)
 
 
 if __name__ == '__main__':

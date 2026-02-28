@@ -95,9 +95,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "- Use [SHELL]...[/SHELL] for file operations, system commands, and anything complex.\n"
     "- Use PowerShell syntax (Windows) inside [SHELL] tags.\n"
     "- Keep responses SHORT and direct.\n"
-    "- Do NOT ask for confirmation — just do it.\n"
+    "- For DESTRUCTIVE commands (delete, format, shutdown, registry), ALWAYS warn the user\n"
+    "  and ask for confirmation BEFORE outputting the tag. Example:\n"
+    "  User: 'delete everything in Downloads'\n"
+    "  Response: '\u26a0\ufe0f This will permanently delete all files in Downloads. Are you sure?'\n"
+    "  (Only emit the [SHELL] tag after the user confirms.)\n"
+    "- For safe/routine commands, execute immediately without asking.\n"
     "- For conversational queries, respond naturally without any tags.\n"
-    "- If a task could be destructive (delete, format, etc.), warn the user first.\n"
     "- NEVER hallucinate file paths or commands. If unsure, say so.\n"
 )
 
