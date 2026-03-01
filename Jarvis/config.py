@@ -62,7 +62,7 @@ PORCUPINE_MODEL_PATH = os.getenv("PORCUPINE_MODEL_PATH", "")
 WAKE_WORD = "jarvis"
 
 # TTS Voice
-TTS_VOICE = "en-US-GuyNeural"
+TTS_VOICE = "en-GB-SoniaNeural"
 
 # Default Persona
 DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", "jarvis")

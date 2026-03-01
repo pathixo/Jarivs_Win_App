@@ -102,8 +102,32 @@ class SafetyEngine:
         self._blocklist: list[str] = []      # Exact command strings to always block
         self._allowlist: list[str] = []      # Patterns to always allow (override risk)
         self._audit_log: list[dict] = []     # In-memory audit trail
-        self._max_audit = 200                # Max entries to keep
+        self._max_audit = 500                # Max entries to keep
         self._execution_timestamps = []      # For rate limiting
+        
+        # Load persistent logs
+        self._load_audit_log()
+
+    def _load_audit_log(self):
+        """Load recent entries from the persistent audit log."""
+        import json
+        import os
+        from Jarvis.config import LOGS_DIR
+        audit_file = os.path.join(LOGS_DIR, "audit.jsonl")
+        
+        if not os.path.exists(audit_file):
+            return
+            
+        try:
+            with open(audit_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                for line in lines[-self._max_audit:]:
+                    try:
+                        self._audit_log.append(json.loads(line))
+                    except:
+                        continue
+        except Exception as e:
+            logger.error("Failed to load persistent audit log: %s", e)
 
     # ── Risk Assessment ─────────────────────────────────────────────────
 
@@ -234,9 +258,10 @@ class SafetyEngine:
 
         # Persistence to audit.jsonl
         try:
-            log_dir = Path("logs")
-            log_dir.mkdir(exist_ok=True)
-            with open(log_dir / "audit.jsonl", "a", encoding="utf-8") as f:
+            from Jarvis.config import LOGS_DIR
+            import os
+            audit_file = os.path.join(LOGS_DIR, "audit.jsonl")
+            with open(audit_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
         except Exception as e:
             logger.error("Failed to write audit log to disk: %s", e)

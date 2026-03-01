@@ -619,3 +619,160 @@ class WindowsBackend(SystemBackend):
     @property
     def shell_name(self) -> str:
         return "powershell"
+
+    # ── System Control Methods ──────────────────────────────────────────
+
+    def screenshot(self, save_dir: Optional[str] = None) -> ActionResult:
+        """Capture a screenshot using PowerShell and save to Pictures folder."""
+        try:
+            save_dir = save_dir or os.path.join(os.path.expanduser("~"), "Pictures")
+            os.makedirs(save_dir, exist_ok=True)
+            import datetime
+            filename = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            filepath = os.path.join(save_dir, filename)
+            # Use PowerShell + .NET to capture the screen
+            ps_script = (
+                "[Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
+                "[Reflection.Assembly]::LoadWithPartialName('System.Drawing') | Out-Null; "
+                "$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
+                "$bmp = New-Object System.Drawing.Bitmap($screen.Width, $screen.Height); "
+                "$g = [System.Drawing.Graphics]::FromImage($bmp); "
+                "$g.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size); "
+                f"$bmp.Save('{filepath}'); "
+                "$g.Dispose(); $bmp.Dispose()"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                check=True, capture_output=True, timeout=10
+            )
+            logger.info("Screenshot saved to %s", filepath)
+            return ActionResult(
+                success=True,
+                message=f"Screenshot saved to your Pictures folder as {filename}.",
+                output=filepath,
+                action_type=ActionType.SCREENSHOT,
+            )
+        except Exception as e:
+            logger.error("Screenshot failed: %s", e)
+            return ActionResult(
+                success=False,
+                message="I wasn't able to take the screenshot.",
+                error=str(e),
+                action_type=ActionType.SCREENSHOT,
+            )
+
+    def lock_screen(self) -> ActionResult:
+        """Lock the Windows workstation."""
+        try:
+            subprocess.run(
+                ["rundll32.exe", "user32.dll,LockWorkStation"],
+                check=True, timeout=5
+            )
+            return ActionResult(
+                success=True,
+                message="Screen locked.",
+                action_type=ActionType.LOCK_SCREEN,
+            )
+        except Exception as e:
+            logger.error("Lock screen failed: %s", e)
+            return ActionResult(
+                success=False,
+                message="I couldn't lock the screen.",
+                error=str(e),
+                action_type=ActionType.LOCK_SCREEN,
+            )
+
+    def set_volume(self, percent: int) -> ActionResult:
+        """Set system volume to a percentage (0–100) using PowerShell."""
+        try:
+            percent = max(0, min(100, int(percent)))
+            # Scale 0-100 to 0-65535 for the Windows API
+            level = int(percent / 100 * 65535)
+            ps_script = (
+                "[Audio.AudioManager]::SetMasterVolume | Out-Null; "
+                f"$obj = New-Object -ComObject WScript.Shell; "
+                # Use SendKeys approach or nircmd if available; fallback to registry
+                "Add-Type -TypeDefinition '"
+                "using System.Runtime.InteropServices; "
+                "public class AudioHelper { "
+                "[DllImport(\"winmm.dll\")] public static extern int waveOutSetVolume(IntPtr h, uint v); "
+                "}'; "
+                f"[AudioHelper]::waveOutSetVolume([IntPtr]::Zero, {level + level * 65536})"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True, timeout=5
+            )
+            return ActionResult(
+                success=True,
+                message=f"Volume set to {percent} percent.",
+                action_type=ActionType.SET_VOLUME,
+            )
+        except Exception as e:
+            logger.error("Set volume failed: %s", e)
+            return ActionResult(
+                success=False,
+                message="I couldn't change the volume.",
+                error=str(e),
+                action_type=ActionType.SET_VOLUME,
+            )
+
+    def mute_toggle(self, mute: bool = True) -> ActionResult:
+        """Mute or unmute the system audio using nircmd or PowerShell WinAPI."""
+        try:
+            mute_val = 1 if mute else 0
+            ps_script = (
+                "Add-Type -TypeDefinition '"
+                "using System.Runtime.InteropServices; "
+                "public class AudioHelper { "
+                "[DllImport(\"winmm.dll\")] public static extern int waveOutSetVolume(IntPtr h, uint v); "
+                "}'; "
+                f"[AudioHelper]::waveOutSetVolume([IntPtr]::Zero, {0 if mute else 0xFFFFFFFF})"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True, timeout=5
+            )
+            state = "Muted" if mute else "Unmuted"
+            return ActionResult(
+                success=True,
+                message=f"{state}.",
+                action_type=ActionType.MUTE,
+            )
+        except Exception as e:
+            logger.error("Mute toggle failed: %s", e)
+            return ActionResult(
+                success=False,
+                message="I couldn't change the mute state.",
+                error=str(e),
+                action_type=ActionType.MUTE,
+            )
+
+    def open_folder(self, folder_name: str) -> ActionResult:
+        """Open a well-known user folder in Windows Explorer."""
+        KNOWN_FOLDERS = {
+            "downloads": os.path.join(os.path.expanduser("~"), "Downloads"),
+            "documents": os.path.join(os.path.expanduser("~"), "Documents"),
+            "pictures": os.path.join(os.path.expanduser("~"), "Pictures"),
+            "music":    os.path.join(os.path.expanduser("~"), "Music"),
+            "videos":   os.path.join(os.path.expanduser("~"), "Videos"),
+            "desktop":  os.path.join(os.path.expanduser("~"), "Desktop"),
+        }
+        key = folder_name.lower().strip()
+        path = KNOWN_FOLDERS.get(key, folder_name)
+        try:
+            subprocess.Popen(["explorer", path])
+            return ActionResult(
+                success=True,
+                message=f"Opened your {folder_name.capitalize()} folder.",
+                action_type=ActionType.OPEN_FOLDER,
+            )
+        except Exception as e:
+            logger.error("Open folder failed: %s", e)
+            return ActionResult(
+                success=False,
+                message=f"I couldn't open the {folder_name} folder.",
+                error=str(e),
+                action_type=ActionType.OPEN_FOLDER,
+            )
+

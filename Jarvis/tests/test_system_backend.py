@@ -194,8 +194,9 @@ class TestSafetyEngine:
     def test_audit_log(self, safety):
         safety.log_action("shell_command", "test_cmd", RiskLevel.LOW, "success")
         log = safety.get_audit_log()
-        assert len(log) == 1
-        assert log[0]["target"] == "test_cmd"
+        assert len(log) >= 1
+        assert log[-1]["target"] == "test_cmd"
+        assert log[-1]["action_type"] == "shell_command"
 
     # ── Action type defaults ──
 

@@ -128,17 +128,14 @@ def main():
 
                     if _streamed[0]:
                         worker.stream_end.emit()
+                        # NOTE: The Orchestrator handles TTS internally for streamed LLM responses.
+                        # We don't call tts.speak(response) here to avoid double-speech.
                     else:
-                        # Non-streamed response (meta-commands etc.) — show in UI
+                        # Non-streamed response (meta-commands etc.) — show in UI AND speak
                         worker.output_ready.emit(f"Response: {response}")
+                        if response and not response.startswith("Error"):
+                            tts.speak(response)
 
-                    # TTS
-                    if response and not response.startswith("Error"):
-                        listener.set_processing(True)
-                        clr.print_debug(f"  TTS generating...")
-                        tts.speak(response)
-                        t2 = _t.time()
-                        clr.print_debug(f"  TTS ready in {t2-t1:.2f}s")
                     clr.print_debug(f"  Total: {_t.time()-t0:.2f}s")
                     print(clr.divider())
                 except Exception as e:

@@ -29,6 +29,14 @@ class ActionType(str, Enum):
     EXEC_CODE      = "exec_code"
     SEARCH_SYSTEM  = "search_system"
 
+    # System control actions
+    SCREENSHOT     = "screenshot"
+    LOCK_SCREEN    = "lock_screen"
+    SET_VOLUME     = "set_volume"
+    MUTE           = "mute"
+    SET_TIMER      = "set_timer"
+    OPEN_FOLDER    = "open_folder"
+
     # Error Types (used in ActionResult.action_type for failed actions)
     APP_NOT_FOUND        = "app_not_found"
     MEDIA_SEARCH_FAILED  = "media_search_failed"

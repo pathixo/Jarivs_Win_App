@@ -80,7 +80,7 @@ _register_builtin(PersonaProfile(
     name="jarvis",
     display_name="J.A.R.V.I.S.",
     description="The iconic AI from Iron Man — composed, loyal, quietly brilliant",
-    voice="en-GB-RyanNeural",
+    voice="en-GB-LibbyNeural",
     tts_rate="+8%",
     greeting="All systems nominal, sir. J.A.R.V.I.S. is online and at your service.",
     system_prompt=_build_prompt(

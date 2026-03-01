@@ -20,10 +20,10 @@ class Listener(QObject):
     state_changed = pyqtSignal(str)
     command_received = pyqtSignal(str)
 
-    SPEECH_THRESHOLD = 500
+    SPEECH_THRESHOLD = 450
     SILENCE_THRESHOLD = 300
-    SILENCE_DURATION = 0.6
-    MIN_SPEECH_DURATION = 0.3
+    SILENCE_DURATION = 0.4
+    MIN_SPEECH_DURATION = 0.25
     MAX_DURATION = 15.0
 
     RATE = 16000

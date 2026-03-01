@@ -15,6 +15,7 @@ import logging
 import json
 import re
 import time
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -627,6 +628,20 @@ class Brain:
             self.settings.provider, self.settings.model, active_persona.name,
         )
         print(f"Brain initialized | provider={self.settings.provider} | model={self.settings.model} | persona={active_persona.name}")
+
+        # Warm up: Load default model in background to reduce first-query latency
+        if self.settings.provider == Provider.OLLAMA:
+            threading.Thread(target=self._warm_up, daemon=True).start()
+
+    def _warm_up(self):
+        """Pre-load the model into memory."""
+        try:
+            logger.info("Warming up Ollama model: %s", self.settings.model)
+            # Send a minimal prompt just to trigger loading
+            self.generate_response("hi", history=[])
+            logger.info("Ollama model warmed up.")
+        except Exception as e:
+            logger.warning("Warm-up failed: %s", e)
 
     # ── Public API ──────────────────────────────────────────────────────────
 

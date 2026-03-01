@@ -294,7 +294,13 @@ class Orchestrator:
                     result = self.action_router.execute_action(req)
                     return result.message
 
-            # 8. Pre-LLM media / search bypass — deterministic, no hallucination
+            # 8a. Pre-LLM system control bypass
+            #     Catches "screenshot", "lock screen", "what time is it", "mute", etc.
+            sys_result = self._detect_system_intent(command_text)
+            if sys_result is not None:
+                return sys_result
+
+            # 8b. Pre-LLM media / search bypass — deterministic, no hallucination
             #    Catches "play X on youtube", "search X", "open url in chrome", etc.
             #    before the LLM sees them. Avoids placeholder text and model confusion.
             direct_result = self._detect_media_or_search_intent(command_text)
@@ -330,6 +336,80 @@ class Orchestrator:
         for pattern in DIRECT_SHELL_PATTERNS:
             if re.search(pattern, text, re.IGNORECASE):
                 return text
+        return None
+
+    def _detect_system_intent(self, text: str) -> Optional[str]:
+        """
+        Deterministically handle Windows system control intents WITHOUT the LLM.
+        Covers: screenshot, lock screen, time/date, mute/volume, open folder, timer.
+        Returns the response string if handled, or None to fall through.
+        """
+        import datetime
+        tl = text.strip().lower()
+
+        # ── 1. Time / Date — instant, from Python datetime ──────────────────────
+        if re.search(r"what('?s| is) (the )?(time|current time)", tl) or re.search(r"\btime( is it| now)?\b", tl):
+            now = datetime.datetime.now()
+            t = now.strftime("%I:%M %p").lstrip("0")
+            msg = f"It's {t}."
+            clr.print_info(f"  Time bypass: {msg}")
+            return msg
+
+        if re.search(r"what('?s| is) (the )?(date|today)", tl) or re.search(r"today'?s date", tl):
+            today = datetime.datetime.now().strftime("%A, %B %d, %Y")
+            msg = f"Today is {today}."
+            clr.print_info(f"  Date bypass: {msg}")
+            return msg
+
+        # ── 2. Screenshot ──────────────────────────────────────────────
+        if re.search(r"(take|capture|grab)\s+(a\s+)?screenshot", tl) or re.search(r"^screenshot$", tl):
+            clr.print_info("  Screenshot bypass")
+            return self._backend.screenshot().message
+
+        # ── 3. Lock screen / computer ────────────────────────────────────
+        if re.search(r"lock\s+(the\s+)?(screen|computer|pc|laptop|workstation)", tl) or re.search(r"^lock( ?(me|my ?(pc|computer|screen)))?$", tl):
+            clr.print_info("  Lock screen bypass")
+            return self._backend.lock_screen().message
+
+        # ── 4. Mute / Unmute ──────────────────────────────────────────
+        if re.search(r"^mute(\s+(the\s+)?(sound|audio|volume|mic))?$", tl):
+            clr.print_info("  Mute bypass")
+            return self._backend.mute_toggle(mute=True).message
+
+        if re.search(r"^unmute(\s+(the\s+)?(sound|audio|volume|mic))?$", tl):
+            clr.print_info("  Unmute bypass")
+            return self._backend.mute_toggle(mute=False).message
+
+        # ── 5. Set volume ─────────────────────────────────────────────
+        vol_match = re.search(r"(set\s+)?(volume|vol)(\s+to)?\s+(\d{1,3})\s*%?", tl)
+        if vol_match:
+            pct = int(vol_match.group(4))
+            clr.print_info(f"  Volume bypass: {pct}%")
+            return self._backend.set_volume(pct).message
+
+        # ── 6. Open folder ─────────────────────────────────────────────
+        folder_match = re.search(
+            r"(?:open|show|go to)\s+(?:my\s+)?(downloads?|documents?|pictures?|music|videos?|desktop)",
+            tl
+        )
+        if folder_match:
+            fname = folder_match.group(1).rstrip("s")  # downloads -> download
+            # Map back to full name
+            fname_map = {"download": "downloads", "document": "documents",
+                         "picture": "pictures", "music": "music",
+                         "video": "videos", "desktop": "desktop"}
+            fname = fname_map.get(fname, fname)
+            clr.print_info(f"  Open folder bypass: {fname}")
+            return self._backend.open_folder(fname).message
+
+        # ── 7. Task Manager / System Tools ────────────────────────────
+        if re.search(r"(open\s+)?task\s*manager", tl):
+            from Jarvis.core.system.actions import ActionRequest, ActionType
+            req = ActionRequest(action_type=ActionType.LAUNCH_APP, target="taskmgr")
+            result = self.action_router.execute_action(req)
+            return result.message
+
+        # Not handled — fall through to media/search bypass or LLM
         return None
 
     def _detect_media_or_search_intent(self, text: str) -> Optional[str]:
@@ -469,11 +549,11 @@ class Orchestrator:
         t0 = time.time()
         
         # ── 1. Thinking Filler Logic ──
-        # If no tokens arrive within 800ms, say a filler to keep user engaged
+        # If no tokens arrive within 600ms, say a filler to keep user engaged
         _first_token_received = threading.Event()
         
         def _speak_filler():
-            time.sleep(0.8)
+            time.sleep(0.6)
             if not _first_token_received.is_set():
                 fillers = ["Let me check that for you.", "One moment, sir.", "Looking into it.", "Processing that now."]
                 import random

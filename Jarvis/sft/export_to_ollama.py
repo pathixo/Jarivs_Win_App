@@ -130,7 +130,7 @@ For conversational queries, respond naturally without any tags."""
 
 def main():
     parser = argparse.ArgumentParser(description="Export LoRA to Ollama")
-    parser.add_argument("--base-model", default="Qwen/Qwen2.5-1.5B",
+    parser.add_argument("--base-model", default="Qwen/Qwen2.5-1.5B-Instruct",
                         help="Base model name on HuggingFace")
     parser.add_argument("--lora-path", default="output/jarvis-gemma-lora",
                         help="Path to LoRA adapter directory")
