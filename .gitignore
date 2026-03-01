@@ -40,3 +40,11 @@ temp_tts.mp3
 
 # Audio samples (if large)
 sample_audio.wav
+
+# ML Model Artifacts
+output/jarvis-action.gguf
+output/jarvis-gemma-lora/
+output/jarvis-instruct-lora/
+output/jarvis-instruct-merged/
+logs/
+llama.cpp/
