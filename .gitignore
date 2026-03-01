@@ -1,4 +1,8 @@
-# Python
+# ═══════════════════════════════════════════════════════════════
+# Jarvis — .gitignore
+# ═══════════════════════════════════════════════════════════════
+
+# ─── Python ─────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -6,53 +10,58 @@ __pycache__/
 *.egg-info/
 *.egg
 dist/
-build/
 eggs/
 *.whl
 
-# Virtual Environment
+# ─── Virtual Environment ────────────────────────────────────────
 .venv/
 venv/
 ENV/
 
-# PyInstaller
+# ─── PyInstaller / Build ────────────────────────────────────────
+build/
 *.manifest
 *.spec
 
-# IDE
+# ─── IDE ────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+.gemini/
 
-# OS
+# ─── OS ─────────────────────────────────────────────────────────
 Thumbs.db
 Desktop.ini
 .DS_Store
 
-# Secrets
+# ─── Secrets ────────────────────────────────────────────────────
 .env
 
-# Temp files
-temp_tts.mp3
+# ─── ML Model Artifacts (NEVER commit model weights) ───────────
+output/
+llama.cpp/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.tflite
+
+# ─── Audio / TTS Temp Files ─────────────────────────────────────
+*.wav
+*.mp3
+temp_tts.*
+command.wav
+
+# ─── Logs / Debug ───────────────────────────────────────────────
+logs/
+*.log
+test_output.txt
+system_prompt_debug.txt
+
+# ─── Temp / Misc ────────────────────────────────────────────────
 *.tmp
-
-# Audio samples (if large)
-sample_audio.wav
-
-# ML Model Artifacts
-output/jarvis-action.gguf
-output/jarvis-gemma-lora/
-output/jarvis-instruct-lora/
-output/jarvis-instruct-merged/
-logs/
-llama.cpp/
-
-# ML Model Artifacts
-output/jarvis-action.gguf
-output/jarvis-gemma-lora/
-output/jarvis-instruct-lora/
-output/jarvis-instruct-merged/
-logs/
-llama.cpp/
+workspace/
