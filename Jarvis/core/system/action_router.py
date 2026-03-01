@@ -26,12 +26,12 @@ logger = logging.getLogger("jarvis.action_router")
 # [ACTION]open_url: https://google.com[/ACTION]
 # [ACTION]system_info[/ACTION]
 ACTION_TAG_PATTERN = re.compile(
-    r"\[ACTION\](.*?)\[/ACTION\]", re.DOTALL
+    r"\[\s*ACTION\s*\](.*?)\s*\[\s*/\s*ACTION\s*\]", re.DOTALL | re.IGNORECASE
 )
 
 # Legacy: [SHELL]command[/SHELL]
 SHELL_TAG_PATTERN = re.compile(
-    r"\[SHELL\](.*?)\[/SHELL\]", re.DOTALL
+    r"\[\s*SHELL\s*\](.*?)\s*\[\s*/\s*SHELL\s*\]", re.DOTALL | re.IGNORECASE
 )
 
 

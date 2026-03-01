@@ -22,7 +22,9 @@ from Jarvis.core.system.backend import SystemBackend
 from Jarvis.core.system.windows import WindowsBackend
 from Jarvis.core.system.app_registry import AppRegistry, AppEntry
 from Jarvis.core.system.safety import SafetyEngine
-from Jarvis.core.system.action_router import ActionRouter, extract_actions
+from Jarvis.core.system.action_router import (
+    ActionRouter, extract_actions, ACTION_TAG_PATTERN, SHELL_TAG_PATTERN
+)
 
 
 def get_backend() -> SystemBackend:
@@ -56,4 +58,6 @@ __all__ = [
     "AppEntry",
     "SafetyEngine",
     "extract_actions",
+    "ACTION_TAG_PATTERN",
+    "SHELL_TAG_PATTERN",
 ]

@@ -17,7 +17,6 @@ for t in tests:
     r = requests.post("http://localhost:11434/api/generate", json={
         "model": "jarvis-action",
         "prompt": t,
-        "system": DEFAULT_SYSTEM_PROMPT,
         "stream": False,
         "options": {"temperature": 0.3, "num_predict": 200}
     }, timeout=60)

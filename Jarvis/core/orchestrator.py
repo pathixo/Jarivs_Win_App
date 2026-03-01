@@ -29,6 +29,7 @@ from Jarvis.core.tools import Tools
 from Jarvis.core import colors as clr
 from Jarvis.core.system import (
     get_backend, ActionRouter, extract_actions, RiskLevel,
+    ActionRequest, ActionType, ACTION_TAG_PATTERN, SHELL_TAG_PATTERN
 )
 
 logger = logging.getLogger("jarvis.orchestrator")
@@ -65,11 +66,12 @@ class _TagStreamFilter:
         for ch in text:
             if not self._in_tag:
                 self._buf += ch
-                # Check for any opening tag
+                # Check for any opening tag (case-insensitive)
                 matched = False
+                buf_upper = self._buf.upper()
                 for open_tag, close_tag in self._TAGS:
-                    if open_tag in self._buf:
-                        idx = self._buf.index(open_tag)
+                    if open_tag in buf_upper:
+                        idx = buf_upper.index(open_tag)
                         display += self._buf[:idx]
                         self._buf = ""
                         self._in_tag = True
@@ -81,15 +83,16 @@ class _TagStreamFilter:
                     continue
                 # Check if buffer could still be a partial tag prefix
                 could_be_prefix = any(
-                    tag.startswith(self._buf) for tag, _ in self._TAGS
+                    tag.startswith(buf_upper) for tag, _ in self._TAGS
                 )
                 if not could_be_prefix:
                     display += self._buf
                     self._buf = ""
             else:
                 self._tag_buf += ch
-                if self._close_tag in self._tag_buf:
-                    idx = self._tag_buf.index(self._close_tag)
+                tag_buf_upper = self._tag_buf.upper()
+                if self._close_tag in tag_buf_upper:
+                    idx = tag_buf_upper.index(self._close_tag)
                     content = self._tag_buf[:idx].strip()
                     if content:
                         if self._tag_type == "[SHELL]":
@@ -120,10 +123,11 @@ DIRECT_SHELL_PATTERNS = [
     r"tasklist|taskkill|systeminfo|hostname|netstat|nslookup|tracert|shutdown|"
     r"get-process|get-service|get-childitem|set-location|get-content|"
     r"select-object|where-object|format-table|format-list|out-file|"
-    r"start-process|stop-process|restart-service|get-date)\b",
+    r"start-process|stop-process|restart-service|get-date|taskmgr|control|"
+    r"services\.msc|regedit|mstsc|winver|curl|wget|ssh|scp)\b",
     # Dev tools
-    r"^(git|npm|npx|pip|python|node|docker|cargo|go|rustc|javac|java|dotnet)\b",
-    # App launchers
+    r"^(git|npm|npx|pip|python|node|docker|cargo|go|rustc|javac|java|dotnet|venv|conda)\b",
+    # App launchers (legacy/direct)
     r"^(notepad|calc|explorer|code|chrome|firefox|edge|mspaint|cmd|powershell)\b",
 ]
 
@@ -237,14 +241,27 @@ class Orchestrator:
                 print(clr.info(result))
                 return result
 
-            # 7. Direct shell command detection
+            # 7. Direct app launch detection: "open spotify", "launch notepad"
+            app_match = re.search(r"^(open|launch|start|run)\s+([\w\s.-]+)$", command_text, re.IGNORECASE)
+            if app_match:
+                app_name = app_match.group(2).strip()
+                # Check if it's a known app or a plausible exe before bypassing LLM
+                registry = getattr(self._backend, "_app_registry", None)
+                if registry and (registry.resolve(app_name) or app_name.lower().endswith(".exe")):
+                    from Jarvis.core.system.actions import ActionRequest, ActionType
+                    req = ActionRequest(action_type=ActionType.LAUNCH_APP, target=app_name)
+                    clr.print_info(f"  Direct Launch: {app_name}")
+                    result = self.action_router.execute_action(req)
+                    return result.message
+
+            # 8. Direct shell command detection
             shell_cmd = self._detect_shell_command(command_text)
             if shell_cmd:
                 clr.print_shell(shell_cmd)
                 result = self._execute_shell(shell_cmd)
                 return result
 
-            # 8. Route to Brain (LLM) for everything else
+            # 9. Route to Brain (LLM) for everything else
             return self._process_with_llm(
                 command_text,
                 token_callback=token_callback,
@@ -314,8 +331,9 @@ class Orchestrator:
         else:
             # ── Non-streaming path (fallback) ───────────────────────────
             llm_response = self.brain.generate_response(command_text)
-            shell_commands = re.findall(r'\[SHELL\](.*?)\[/SHELL\]', llm_response, re.DOTALL)
-            action_commands = re.findall(r'\[ACTION\](.*?)\[/ACTION\]', llm_response, re.DOTALL)
+            action_reqs, shell_commands = extract_actions(llm_response)
+            # Map action_reqs to action_commands strings for compatibility with the rest of this method
+            action_commands = [req.raw_text for req in action_reqs]
 
         elapsed = time.time() - t0
         clr.print_debug(f"  Response in {elapsed:.2f}s")
@@ -343,8 +361,9 @@ class Orchestrator:
             return llm_response
 
         # Conversational part (outside tags) — for TTS
-        clean_text = re.sub(r'\[SHELL\].*?\[/SHELL\]', '', llm_response, flags=re.DOTALL)
-        clean_text = re.sub(r'\[ACTION\].*?\[/ACTION\]', '', clean_text, flags=re.DOTALL).strip()
+        from Jarvis.core.system.action_router import ACTION_TAG_PATTERN, SHELL_TAG_PATTERN
+        clean_text = SHELL_TAG_PATTERN.sub('', llm_response)
+        clean_text = ACTION_TAG_PATTERN.sub('', clean_text).strip()
 
         results = []
         if clean_text:
