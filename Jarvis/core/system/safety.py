@@ -49,8 +49,13 @@ RISK_PATTERNS: list[RiskPattern] = [
     RiskPattern(r"netsh\s+advfirewall", RiskLevel.HIGH, "Firewall modification"),
 
     # MEDIUM — network, process control, environment changes
+    RiskPattern(r"(?:invoke-webrequest|curl|wget).*\|\s*(?:iex|invoke-expression)", RiskLevel.CRITICAL, "Web request piped to execute"),
     RiskPattern(r"invoke-webrequest|curl|wget", RiskLevel.MEDIUM, "Network download"),
     RiskPattern(r"Invoke-Expression|iex", RiskLevel.HIGH, "Dynamic code execution"),
+    RiskPattern(r"-(enc|encodedcommand)\b", RiskLevel.HIGH, "Encoded PowerShell command"),
+    RiskPattern(r"wsl\b", RiskLevel.HIGH, "WSL Subsystem execution"),
+    RiskPattern(r"powershell.*-ep\s+bypass", RiskLevel.HIGH, "PowerShell execution policy bypass"),
+    RiskPattern(r"(certutil|bitsadmin|mshta|wmic|cscript|wscript)\b", RiskLevel.HIGH, "Windows LOLBin execution"),
     RiskPattern(r"stop-process|taskkill", RiskLevel.MEDIUM, "Process termination"),
     RiskPattern(r"set-itemproperty", RiskLevel.MEDIUM, "Property modification"),
     RiskPattern(r"new-service", RiskLevel.MEDIUM, "Service creation"),
@@ -72,6 +77,7 @@ class SafetyEngine:
         self._allowlist: list[str] = []      # Patterns to always allow (override risk)
         self._audit_log: list[dict] = []     # In-memory audit trail
         self._max_audit = 200                # Max entries to keep
+        self._execution_timestamps = []      # For rate limiting
 
     # ── Risk Assessment ─────────────────────────────────────────────────
 
@@ -118,6 +124,13 @@ class SafetyEngine:
         Returns:
             (should_block: bool, reason: str)
         """
+        import time
+        now = time.time()
+        self._execution_timestamps = [t for t in self._execution_timestamps if now - t < 10.0]
+        if len(self._execution_timestamps) >= 5:
+            return True, "Blocked: Rate limit exceeded (too many commands in quick succession)"
+        self._execution_timestamps.append(now)
+
         risk, desc = self.assess_command(command)
         if risk == RiskLevel.CRITICAL:
             return True, f"Blocked (CRITICAL): {desc}"
@@ -166,6 +179,9 @@ class SafetyEngine:
     ) -> None:
         """Record an action in the audit log."""
         import time
+        import json
+        from pathlib import Path
+
         entry = {
             "timestamp": time.time(),
             "action_type": action_type,
@@ -177,6 +193,15 @@ class SafetyEngine:
         self._audit_log.append(entry)
         if len(self._audit_log) > self._max_audit:
             self._audit_log = self._audit_log[-self._max_audit:]
+
+        # Persistence to audit.jsonl
+        try:
+            log_dir = Path("logs")
+            log_dir.mkdir(exist_ok=True)
+            with open(log_dir / "audit.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception as e:
+            logger.error("Failed to write audit log to disk: %s", e)
 
         logger.info(
             "AUDIT | %s | target=%s | risk=%s | outcome=%s | llm=%s",

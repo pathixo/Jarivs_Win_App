@@ -18,15 +18,17 @@ class TestUILaunch(unittest.TestCase):
         """
         Test that the main window launches without error and closes after a short delay.
         """
-        app = QApplication(sys.argv)
+        app = QApplication.instance()
+        if not app:
+            app = QApplication(sys.argv)
         window = MainWindow()
         window.show()
         
         self.assertTrue(window.isVisible())
-        self.assertEqual(window.windowTitle(), "Jarvis Hybrid Brain")
+        self.assertEqual(window.windowTitle(), "Jarvis AI")
         
         # Close the window after 1 second to finish the test
-        QTimer.singleShot(1000, window.close)
+        QTimer.singleShot(1000, app.quit)
         
         # Run the event loop
         app.exec()

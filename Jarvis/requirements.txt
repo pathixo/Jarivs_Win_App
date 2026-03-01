@@ -1,7 +1,6 @@
 PyQt6
 PyQt6-WebEngine
 requests
-pvporcupine
 faster-whisper
 edge-tts
 sounddevice
@@ -9,3 +8,4 @@ numpy
 python-dotenv
 colorama
 pyaudio
+psutil>=5.9.0

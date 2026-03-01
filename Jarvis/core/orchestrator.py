@@ -325,6 +325,17 @@ class Orchestrator:
             clr.print_error("No response received.")
             return "I didn't get a response. Please try again."
 
+        # Repetition detector guardrail
+        lines = llm_response.split('\n')
+        line_counts = {}
+        for line in lines:
+            line = line.strip()
+            if line:
+                line_counts[line] = line_counts.get(line, 0) + 1
+                if line_counts[line] >= 3:
+                    clr.print_warning("Model produced repetitive output.")
+                    return "Model produced repetitive output — falling back to conversational mode"
+
         if not shell_commands and not action_commands:
             # Pure conversational response
             if not token_callback:

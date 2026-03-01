@@ -319,6 +319,102 @@ def generate_conversational_examples(count: int, seen_inputs: set) -> list[dict]
     return examples
 
 
+def generate_system_info_examples(count: int, seen_inputs: set) -> list[dict]:
+    """Generate system info examples."""
+    examples = []
+    templates = [
+        "show me my full system specs", "what hardware do i have", "give me a system report", 
+        "hey tell me about this computer", "whats my machine spec", "pull up my pc info",
+        "system specs", "tell me my ram and cpu"
+    ]
+    attempts = 0
+    idx = 0
+    while len(examples) < count and attempts < count * 10:
+        attempts += 1
+        user_input = random.choice(templates)
+        if count > len(templates):
+            user_input = f"{user_input} {random.choice(['please', 'now', 'rn', 'for me', 'quick', ''])}".strip()
+        if user_input in seen_inputs: continue
+        seen_inputs.add(user_input)
+        examples.append({
+            "id": f"gen_sys_{idx:04d}",
+            "split": random.choice(["train", "train", "val"]),
+            "scenario": "system_info",
+            "user_input": user_input,
+            "assistant_text": "Fetching system info.",
+            "action_tags": ["system_info"],
+            "shell_tags": [],
+            "risk_level": "low",
+            "requires_confirmation": False,
+            "should_block": False,
+            "expected_outcome": "executed",
+        })
+        idx += 1
+    return examples
+
+
+def generate_mixed_examples(count: int, seen_inputs: set) -> list[dict]:
+    """Generate mixed actions + shell commands."""
+    examples = []
+    attempts = 0
+    idx = 0
+    while len(examples) < count and attempts < count * 10:
+        attempts += 1
+        app = random.choice(["chrome", "vscode", "discord", "notepad", "spotify"])
+        folder = random.choice(FOLDER_NAMES)
+        user_input = f"open {app} and create folder {folder} {random.choice(['please', 'now', 'rn', ''])}".strip()
+        if user_input in seen_inputs: continue
+        seen_inputs.add(user_input)
+        examples.append({
+            "id": f"gen_mix_{idx:04d}",
+            "split": random.choice(["train", "train", "val"]),
+            "scenario": "mixed",
+            "user_input": user_input,
+            "assistant_text": f"Opening {app} and creating folder {folder}.",
+            "action_tags": [f"launch_app: {app}"],
+            "shell_tags": [f"New-Item -ItemType Directory -Name '{folder}' -Force"],
+            "risk_level": "low",
+            "requires_confirmation": False,
+            "should_block": False,
+            "expected_outcome": "executed",
+        })
+        idx += 1
+    return examples
+
+
+def generate_multi_action_examples(count: int, seen_inputs: set) -> list[dict]:
+    """Generate multi action examples."""
+    examples = []
+    attempts = 0
+    idx = 0
+    while len(examples) < count and attempts < count * 10:
+        attempts += 1
+        app1 = random.choice(["chrome", "vscode", "discord", "notepad"])
+        app2 = random.choice(["spotify", "steam", "figma", "github"])
+        user_input = f"open {app1} and go to {app2} {random.choice(['please', 'now', 'rn', ''])}".strip()
+        if user_input in seen_inputs: continue
+        seen_inputs.add(user_input)
+        
+        is_url = app2 in ["github", "figma"]
+        tag2 = f"open_url: https://{app2}.com" if is_url else f"launch_app: {app2}"
+        
+        examples.append({
+            "id": f"gen_multi_{idx:04d}",
+            "split": random.choice(["train", "train", "val"]),
+            "scenario": "multi_action",
+            "user_input": user_input,
+            "assistant_text": f"Opening {app1} and {app2}.",
+            "action_tags": [f"launch_app: {app1}", tag2],
+            "shell_tags": [],
+            "risk_level": "low",
+            "requires_confirmation": False,
+            "should_block": False,
+            "expected_outcome": "executed",
+        })
+        idx += 1
+    return examples
+
+
 def generate_dataset(total_count: int, output_path: str) -> None:
     """Generate a balanced dataset with the target count of examples."""
     registry = load_app_registry()
@@ -338,18 +434,26 @@ def generate_dataset(total_count: int, output_path: str) -> None:
                         seen_inputs.add(ex["user_input"])
                         all_examples.append(ex)
 
-    # Distribution: 30% app, 10% url, 25% shell_safe, 15% danger, 5% critical, 15% conv
+    # Target distribution: max 20% per category
+    # app_launch 18%, url_open 12% (combined 30%)
+    # shell_safe 18%, shell_dangerous 15%, shell_critical 7%
+    # conversational 18%, system_info 5%, mixed 4%, multi_action 3%
     n_app = int(total_count * 0.30)
-    n_url = int(total_count * 0.10)
-    n_shell = int(total_count * 0.25)
+    n_shell = int(total_count * 0.18)
     n_danger = int(total_count * 0.15)
-    n_critical = int(total_count * 0.05)
-    n_conv = total_count - n_app - n_url - n_shell - n_danger - n_critical
+    n_critical = int(total_count * 0.07)
+    n_sys = int(total_count * 0.05)
+    n_mix = int(total_count * 0.04)
+    n_multi = int(total_count * 0.03)
+    n_conv = total_count - n_app - n_shell - n_danger - n_critical - n_sys - n_mix - n_multi
 
-    all_examples.extend(generate_app_examples(registry, n_app + n_url, seen_inputs))
+    all_examples.extend(generate_app_examples(registry, n_app, seen_inputs))
     all_examples.extend(generate_shell_examples(n_shell, seen_inputs))
     all_examples.extend(generate_danger_examples(n_danger, seen_inputs))
     all_examples.extend(generate_critical_examples(n_critical, seen_inputs))
+    all_examples.extend(generate_system_info_examples(n_sys, seen_inputs))
+    all_examples.extend(generate_mixed_examples(n_mix, seen_inputs))
+    all_examples.extend(generate_multi_action_examples(n_multi, seen_inputs))
     all_examples.extend(generate_conversational_examples(n_conv, seen_inputs))
 
     # Shuffle

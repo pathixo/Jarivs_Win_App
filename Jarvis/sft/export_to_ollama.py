@@ -1,4 +1,4 @@
- """
+"""
 Export fine-tuned LoRA adapters to Ollama-compatible GGUF format.
 
 Usage:
@@ -40,6 +40,7 @@ def merge_lora(base_model: str, lora_path: str, output_path: str):
 
     print("Merging weights...")
     model = model.merge_and_unload()
+    model.to("cpu")
 
     print(f"Saving merged model to: {output_path}")
     model.save_pretrained(output_path)
@@ -62,6 +63,13 @@ def convert_to_gguf(merged_path: str, gguf_output: str):
             ["git", "clone", "https://github.com/ggerganov/llama.cpp.git"],
             check=True,
         )
+        # Filter out torch from requirements.txt to avoid overwriting CUDA version
+        req_path = Path("llama.cpp/requirements.txt")
+        if req_path.exists():
+            reqs = req_path.read_text(encoding="utf-8").splitlines()
+            reqs = [r for r in reqs if not r.lower().startswith("torch")]
+            req_path.write_text("\n".join(reqs), encoding="utf-8")
+
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-r", "llama.cpp/requirements.txt"],
             check=True,
@@ -74,7 +82,7 @@ def convert_to_gguf(merged_path: str, gguf_output: str):
             str(convert_script),
             merged_path,
             "--outfile", gguf_output,
-            "--outtype", "q8_0",  # 8-bit quantization, good quality/size balance
+            "--outtype", "f16",  # f16 quantization to avoid quality loss
         ],
         check=True,
     )
@@ -89,14 +97,19 @@ def import_to_ollama(gguf_path: str, model_name: str):
 
 PARAMETER temperature 0.3
 PARAMETER top_p 0.9
-PARAMETER stop "[/SHELL]"
-PARAMETER stop "[/ACTION]"
+PARAMETER repeat_penalty 1.3
 PARAMETER num_ctx 2048
 
 SYSTEM """You are Jarvis, an autonomous AI assistant. You execute system commands using structured tags.
 
 For shell commands: [SHELL]command here[/SHELL]
-For app actions: [ACTION]{{"type": "open_app", "target": "app_name"}}[/ACTION]
+For app actions use colon format: [ACTION]launch_app: notepad[/ACTION]
+
+Available action types:
+- launch_app: <app_name>
+- open_url: <url>
+- system_info
+- notification: <title> | <message>
 
 For dangerous commands (shutdown, format, delete system files), ask for confirmation first.
 For safe commands, execute directly.
@@ -147,7 +160,7 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"  Next: Update your .env to use the fine-tuned model")
-    print(f"  JARVIS_MODEL={args.ollama_name}")
+    print(f"  OLLAMA_MODEL={args.ollama_name}")
     print(f"{'='*60}")
 
 

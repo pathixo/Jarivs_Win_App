@@ -49,7 +49,7 @@ def main():
         
         threading.Thread(target=process, daemon=True).start()
 
-    window.terminal.command_signal.connect(on_command_input)
+    window.command_submitted.connect(on_command_input)
     
     # NO listener, NO audio
     print("Test 2 launched. Type a command...")

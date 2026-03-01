@@ -201,7 +201,7 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="QLoRA fine-tune Gemma 2B for Jarvis")
-    parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B",
+    parser.add_argument("--model", default="Qwen/Qwen2.5-1.5B-Instruct",
                         help="Base model name or path")
     parser.add_argument("--data", required=True,
                         help="Chat-format JSONL training data")
