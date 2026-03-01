@@ -210,3 +210,41 @@
 {"timestamp": 1772337544.6720057, "action_type": "launch_app", "target": "chrome", "risk": "low", "outcome": "success", "from_llm": true}
 {"timestamp": 1772337544.673031, "action_type": "open_url", "target": "https://google.com", "risk": "low", "outcome": "success", "from_llm": true}
 {"timestamp": 1772337544.6757958, "action_type": "system_info", "target": "", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.030963, "action_type": "shell_command", "target": "format c:", "risk": "critical", "outcome": "blocked", "from_llm": true}
+{"timestamp": 1772337591.0325646, "action_type": "shell_command", "target": "bcdedit /set", "risk": "critical", "outcome": "blocked", "from_llm": true}
+{"timestamp": 1772337591.0347533, "action_type": "shell_command", "target": "diskpart", "risk": "critical", "outcome": "blocked", "from_llm": true}
+{"timestamp": 1772337591.0371218, "action_type": "shell_command", "target": "format c:", "risk": "critical", "outcome": "blocked", "from_llm": true}
+{"timestamp": 1772337591.0387294, "action_type": "shell_command", "target": "shutdown /s", "risk": "high", "outcome": "denied", "from_llm": true}
+{"timestamp": 1772337591.0403173, "action_type": "shell_command", "target": "echo test", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.042058, "action_type": "shell_command", "target": "reg delete HKCU\\Software\\Test", "risk": "high", "outcome": "denied", "from_llm": true}
+{"timestamp": 1772337591.0437744, "action_type": "shell_command", "target": "Remove-Item C:\\Users\\test -Recurse", "risk": "high", "outcome": "denied", "from_llm": true}
+{"timestamp": 1772337591.044848, "action_type": "shell_command", "target": "rm -rf /tmp/test", "risk": "high", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0464733, "action_type": "shell_command", "target": "rm -rf /tmp/test", "risk": "high", "outcome": "denied", "from_llm": true}
+{"timestamp": 1772337591.0475996, "action_type": "shell_command", "target": "shutdown /s", "risk": "high", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0492465, "action_type": "shell_command", "target": "shutdown /s", "risk": "high", "outcome": "denied", "from_llm": true}
+{"timestamp": 1772337591.05104, "action_type": "shell_command", "target": "Stop-Service wuauserv", "risk": "high", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0526772, "action_type": "shell_command", "target": "curl https://example.com", "risk": "medium", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0548916, "action_type": "shell_command", "target": "shutdown /s", "risk": "high", "outcome": "denied", "from_llm": true}
+{"timestamp": 1772337591.058343, "action_type": "shell_command", "target": "echo hello", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0594678, "action_type": "shell_command", "target": "Get-Date", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0707996, "action_type": "launch_app", "target": "spotify", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0763464, "action_type": "shell_command", "target": "format c:", "risk": "critical", "outcome": "blocked", "from_llm": true}
+{"timestamp": 1772337591.0793436, "action_type": "shell_command", "target": "shutdown /s", "risk": "high", "outcome": "denied", "from_llm": true}
+{"timestamp": 1772337591.0818672, "action_type": "launch_app", "target": "explorer", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0828614, "action_type": "shell_command", "target": "New-Item -ItemType Directory -Name 'work' -Force", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0848718, "action_type": "launch_app", "target": "spotify", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0858576, "action_type": "launch_app", "target": "discord", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0858576, "action_type": "launch_app", "target": "chrome", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0893657, "action_type": "shell_command", "target": "Get-Date", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.0915103, "action_type": "open_url", "target": "https://youtube.com", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.1122336, "action_type": "shell_command", "target": "format c:", "risk": "critical", "outcome": "blocked", "from_llm": true}
+{"timestamp": 1772337591.1399229, "action_type": "shell_command", "target": "echo hello", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.186847, "action_type": "shell_command", "target": "dir", "risk": "low", "outcome": "success", "from_llm": false}
+{"timestamp": 1772337591.1910667, "action_type": "shell_command", "target": "echo hello", "risk": "low", "outcome": "success", "from_llm": false}
+{"timestamp": 1772337591.2502441, "action_type": "shell_command", "target": "test_cmd", "risk": "low", "outcome": "success", "from_llm": false}
+{"timestamp": 1772337591.2718923, "action_type": "shell_command", "target": "dir", "risk": "low", "outcome": "success", "from_llm": false}
+{"timestamp": 1772337591.2739832, "action_type": "shell_command", "target": "format C:", "risk": "critical", "outcome": "blocked", "from_llm": true}
+{"timestamp": 1772337591.2754896, "action_type": "launch_app", "target": "chrome", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.27751, "action_type": "open_url", "target": "https://google.com", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337591.2790296, "action_type": "system_info", "target": "", "risk": "low", "outcome": "success", "from_llm": true}
+{"timestamp": 1772337602.6518888, "action_type": "shell_command", "target": "shutdown my PC", "risk": "low", "outcome": "failure", "from_llm": false}
