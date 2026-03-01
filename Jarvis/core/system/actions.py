@@ -25,6 +25,14 @@ class ActionType(str, Enum):
     FILE_LIST      = "file_list"
     SYSTEM_INFO    = "system_info"
     NOTIFICATION   = "notification"
+    PLAY_MUSIC     = "play_music"
+    EXEC_CODE      = "exec_code"
+    SEARCH_SYSTEM  = "search_system"
+
+    # Error Types (used in ActionResult.action_type for failed actions)
+    APP_NOT_FOUND        = "app_not_found"
+    MEDIA_SEARCH_FAILED  = "media_search_failed"
+    CODE_EXEC_ERROR      = "code_exec_error"
 
 
 class RiskLevel(str, Enum):

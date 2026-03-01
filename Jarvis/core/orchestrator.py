@@ -21,6 +21,7 @@ Features:
 
 import logging
 import re
+import threading
 import time
 from typing import Optional
 
@@ -49,6 +50,7 @@ class _TagStreamFilter:
     _TAGS = [
         ("[SHELL]", "[/SHELL]"),
         ("[ACTION]", "[/ACTION]"),
+        ("[EXEC_CODE]", "[/EXEC_CODE]"),
     ]
 
     def __init__(self):
@@ -59,6 +61,7 @@ class _TagStreamFilter:
         self._tag_buf   = ""   # accumulates the tag content
         self.shell_commands: list[str] = []
         self.action_commands: list[str] = []
+        self.code_commands: list[str] = []
 
     def feed(self, text: str) -> str:
         """Return the displayable portion of a token (empty when inside a tag block)."""
@@ -66,6 +69,19 @@ class _TagStreamFilter:
         for ch in text:
             if not self._in_tag:
                 self._buf += ch
+                
+                # Pre-filter: Check for markdown code block markers starting (e.g. ```)
+                # and strip them if they appear just before or as part of a tag sequence.
+                if "```" in self._buf:
+                    # If we see backticks, we strip them from the display buffer
+                    # to prevent them leaking into the UI while we wait for the tag.
+                    self._buf = self._buf.replace("```", "")
+                    # Also strip common language identifiers that follow
+                    for lang in ["shell", "action", "powershell", "cmd", "python"]:
+                        if self._buf.lower().endswith(lang):
+                            self._buf = self._buf[:-(len(lang))]
+                            break
+
                 # Check for any opening tag (case-insensitive)
                 matched = False
                 buf_upper = self._buf.upper()
@@ -94,15 +110,22 @@ class _TagStreamFilter:
                 if self._close_tag in tag_buf_upper:
                     idx = tag_buf_upper.index(self._close_tag)
                     content = self._tag_buf[:idx].strip()
+                    # Also clean up trailing backticks inside the tag buffer if they exist
+                    content = content.replace("```", "").strip()
                     if content:
                         if self._tag_type == "[SHELL]":
                             self.shell_commands.append(content)
                         elif self._tag_type == "[ACTION]":
                             self.action_commands.append(content)
+                        elif self._tag_type == "[EXEC_CODE]":
+                            self.code_commands.append(content)
                     self._tag_buf = self._tag_buf[idx + len(self._close_tag):]
                     self._in_tag = False
                     self._tag_type = None
                     self._close_tag = None
+                    
+                    # Post-tag: Clean up trailing backticks in the main buffer
+                    self._buf = self._buf.replace("```", "")
         return display
 
     def flush(self) -> str:
@@ -125,22 +148,28 @@ DIRECT_SHELL_PATTERNS = [
     r"select-object|where-object|format-table|format-list|out-file|"
     r"start-process|stop-process|restart-service|get-date|taskmgr|control|"
     r"services\.msc|regedit|mstsc|winver|curl|wget|ssh|scp)\b",
-    # Dev tools
-    r"^(git|npm|npx|pip|python|node|docker|cargo|go|rustc|javac|java|dotnet|venv|conda)\b",
+    # Dev tools (common/safe usage)
+    r"^(git\s+(status|branch|log|diff|show|remote))",
+    r"^(npm\s+(list|v|version))",
+    r"^(pip\s+(list|show))",
+    r"^(python\s+(--version|-V))",
     # App launchers (legacy/direct)
     r"^(notepad|calc|explorer|code|chrome|firefox|edge|mspaint|cmd|powershell)\b",
 ]
 
-# Dangerous commands that need extra caution
+# Dangerous commands that need extra caution (synchronized with SafetyEngine)
 DANGEROUS_PATTERNS = [
-    r"format\s+[a-z]:",
-    r"remove-item\s+.*-recurse",
+    r"format\b",
+    r"diskpart\b",
+    r"bcdedit\b",
     r"rm\s+-rf",
+    r"remove-item\s+.*-recurse",
     r"del\s+/[sS]",
-    r"shutdown\s+/[sSpP]",
-    r"reg\s+delete",
-    r"diskpart",
-    r"bcdedit",
+    r"reg\s+(delete|add)",
+    r"netsh\s+advfirewall",
+    r"Set-Service",
+    r"Stop-Service",
+    r"Set-ExecutionPolicy",
 ]
 
 # Maximum output length before truncation (for TTS)
@@ -223,7 +252,13 @@ class Orchestrator:
                 print(clr.info(result))
                 return result
 
-            # 4. Memory commands
+            # 4. Capability commands
+            if re.search(r"^(what can you do|capabilities|help permissions|sandbox)$", command_text, re.IGNORECASE):
+                result = self._handle_capabilities_command()
+                print(clr.info(result))
+                return result
+
+            # 5. Memory commands
             if re.search(r"^(clear memory|forget|reset memory)$", command_text, re.IGNORECASE):
                 result = self.brain.clear_memory()
                 print(clr.info(result))
@@ -245,6 +280,11 @@ class Orchestrator:
             app_match = re.search(r"^(open|launch|start|run)\s+([\w\s.-]+)$", command_text, re.IGNORECASE)
             if app_match:
                 app_name = app_match.group(2).strip()
+                # Sanitize: strip common conversational fluff
+                fluff = [r"\s+please\b", r"\s+thanks\b", r"\s+for me\b", r"\s+now\b", r"^\s+the\s+"]
+                for pat in fluff:
+                    app_name = re.sub(pat, "", app_name, flags=re.IGNORECASE).strip()
+
                 # Check if it's a known app or a plausible exe before bypassing LLM
                 registry = getattr(self._backend, "_app_registry", None)
                 if registry and (registry.resolve(app_name) or app_name.lower().endswith(".exe")):
@@ -254,7 +294,14 @@ class Orchestrator:
                     result = self.action_router.execute_action(req)
                     return result.message
 
-            # 8. Direct shell command detection
+            # 8. Pre-LLM media / search bypass — deterministic, no hallucination
+            #    Catches "play X on youtube", "search X", "open url in chrome", etc.
+            #    before the LLM sees them. Avoids placeholder text and model confusion.
+            direct_result = self._detect_media_or_search_intent(command_text)
+            if direct_result is not None:
+                return direct_result
+
+            # 8b. Direct shell command detection
             shell_cmd = self._detect_shell_command(command_text)
             if shell_cmd:
                 clr.print_shell(shell_cmd)
@@ -285,6 +332,123 @@ class Orchestrator:
                 return text
         return None
 
+    def _detect_media_or_search_intent(self, text: str) -> Optional[str]:
+        """
+        Deterministically handle media/search intents WITHOUT the LLM.
+        Covers: play X on youtube/spotify, search X on google, open URL, etc.
+
+        Returns the response string if handled, or None to fall through to LLM.
+        """
+        from urllib.parse import quote
+        from Jarvis.core.system.actions import ActionRequest, ActionType
+
+        t = text.strip()
+        tl = t.lower()
+
+        # ── Helper to actually run a play_music or open_url action ──
+        def _do_play(query: str) -> str:
+            req = ActionRequest(action_type=ActionType.PLAY_MUSIC, target=query)
+            clr.print_info(f"  Direct Media: {query}")
+            result = self.action_router.execute_action(req)
+            return result.message
+
+        def _do_open_url(url: str) -> str:
+            req = ActionRequest(action_type=ActionType.OPEN_URL, target=url)
+            clr.print_info(f"  Direct URL: {url}")
+            result = self.action_router.execute_action(req)
+            return result.message
+
+        def _do_search_google(query: str) -> str:
+            url = f"https://www.google.com/search?q={quote(query)}"
+            return _do_open_url(url)
+
+        def _do_search_youtube(query: str) -> str:
+            url = f"https://www.youtube.com/results?search_query={quote(query)}"
+            return _do_open_url(url)
+
+        # ── 1. YouTube intent patterns ────────────────────────────────────
+        # "play X on youtube", "watch X on youtube", "search X on youtube",
+        # "play X youtube", "video X on youtube"
+        yt_match = re.search(
+            r"(?:play|watch|search|find|look up|video|open)\s+(.+?)\s+(?:on\s+)?youtube",
+            tl, re.IGNORECASE
+        )
+        if yt_match:
+            query = yt_match.group(1).strip()
+            # Strip leading noise
+            query = re.sub(r"^(a\s+|the\s+|me\s+|some\s+)", "", query, flags=re.IGNORECASE)
+            if query:
+                clr.print_info(f"  YouTube search bypass: {query}")
+                return _do_search_youtube(query)
+
+        yt_open = re.search(r"(?:open|go to|launch|start)\s+youtube", tl)
+        if yt_open and not yt_match:
+            return _do_open_url("https://www.youtube.com")
+
+        # ── 2. Spotify intent patterns ────────────────────────────────────
+        # "play X on spotify", "play X by Y", "play X"
+        spotify_match = re.search(
+            r"(?:play|search|find)\s+(.+?)\s+(?:on\s+)?spotify",
+            tl, re.IGNORECASE
+        )
+        if spotify_match:
+            query = spotify_match.group(1).strip()
+            query = re.sub(r"^(a\s+|the\s+|me\s+|some\s+)", "", query, flags=re.IGNORECASE)
+            if query:
+                clr.print_info(f"  Spotify search bypass: {query}")
+                return _do_play(query + " spotify")
+
+        # "play X by Y" — default to Spotify
+        play_by_match = re.search(
+            r"^(?:play|put on|start playing)\s+(.+?)\s+by\s+(.+)$",
+            tl, re.IGNORECASE
+        )
+        if play_by_match:
+            song = play_by_match.group(1).strip()
+            artist = play_by_match.group(2).strip()
+            query = f"{song} {artist}"
+            clr.print_info(f"  Play by-artist bypass: {query}")
+            return _do_play(query)
+
+        # "play X" (generic, no platform specified) — default Spotify
+        generic_play = re.search(
+            r"^(?:play|put on|start playing)\s+(.+)$",
+            tl, re.IGNORECASE
+        )
+        if generic_play:
+            query = generic_play.group(1).strip()
+            # Don't bypass if it looks like a file path or shell command
+            if not re.search(r'[\\/\.:]', query) and len(query.split()) <= 8:
+                clr.print_info(f"  Generic play bypass: {query}")
+                return _do_play(query)
+
+        # ── 3. Google/web search patterns ────────────────────────────────
+        # "search for X", "google X", "search X on google"
+        google_match = re.search(
+            r"(?:search\s+(?:for\s+)?|google\s+|look up\s+)(.+?)(?:\s+on\s+google)?$",
+            tl, re.IGNORECASE
+        )
+        if google_match:
+            query = google_match.group(1).strip()
+            if query and not re.search(r"youtube|spotify", query):
+                clr.print_info(f"  Google search bypass: {query}")
+                return _do_search_google(query)
+
+        # ── 4. Open a website / URL directly ─────────────────────────────
+        url_match = re.search(
+            r"(?:go to|open|navigate to|visit)\s+(https?://[^\s]+|[\w.-]+\.[a-z]{2,}(?:/[^\s]*)?)",
+            tl, re.IGNORECASE
+        )
+        if url_match:
+            raw_url = url_match.group(1).strip()
+            if not raw_url.startswith("http"):
+                raw_url = "https://" + raw_url
+            clr.print_info(f"  Direct URL bypass: {raw_url}")
+            return _do_open_url(raw_url)
+
+        # Not handled — fall through to LLM
+        return None
+
     # ── LLM Processing ──────────────────────────────────────────────────────
 
     def _process_with_llm(
@@ -297,149 +461,156 @@ class Orchestrator:
         """
         Send to Brain, stream/parse response, execute any [SHELL]/[ACTION] commands found.
 
-        When token_callback is provided the response is streamed token-by-token
-        with [SHELL]/[ACTION] tags filtered out in real-time. Commands collected
-        by the filter are executed after streaming completes.
+        Optimized for LOW LATENCY:
+        - Starts speaking conversational acknowledgment as tokens arrive.
+        - Provides 'Thinking' fillers if the model is slow to respond.
+        - Notifies before/after execution.
         """
         t0 = time.time()
-        clr.print_debug("  Thinking...")
+        
+        # ── 1. Thinking Filler Logic ──
+        # If no tokens arrive within 800ms, say a filler to keep user engaged
+        _first_token_received = threading.Event()
+        
+        def _speak_filler():
+            time.sleep(0.8)
+            if not _first_token_received.is_set():
+                fillers = ["Let me check that for you.", "One moment, sir.", "Looking into it.", "Processing that now."]
+                import random
+                self._speak_async(random.choice(fillers))
+
+        threading.Thread(target=_speak_filler, daemon=True).start()
 
         if token_callback:
-            # ── Streaming path ──────────────────────────────────────────
+            # ── Streaming path (Preferred) ─────────────────────────────
             if begin_callback:
                 begin_callback()
 
             stream_filter = _TagStreamFilter()
             llm_response = ""
-
+            speech_buf = ""
+            
+            # Start UI block
             clr.print_ai_start()
-            for token in self.brain.generate_response_stream(command_text):
-                llm_response += token
-                visible = stream_filter.feed(token)
-                if visible:
-                    token_callback(visible)
-                    clr.print_ai_token(visible)
+            
+            try:
+                for token in self.brain.generate_response_stream(command_text):
+                    if not _first_token_received.is_set():
+                        _first_token_received.set()
+                        
+                    llm_response += token
+                    visible = stream_filter.feed(token)
+                    
+                    if visible:
+                        token_callback(visible)
+                        clr.print_ai_token(visible)
+                        
+                        # Accumulate words for natural speech
+                        speech_buf += visible
+                        
+                        # Speak as soon as we have a full sentence or a line break
+                        if any(punct in visible for punct in ".!?\n"):
+                            sentence = speech_buf.strip()
+                            if len(sentence) > 5:
+                                self._speak_async(sentence)
+                                speech_buf = ""
+            except Exception as e:
+                logger.error("LLM Stream error: %s", e)
+                _first_token_received.set() # Ensure filler thread doesn't trigger late
 
             remaining = stream_filter.flush()
             if remaining:
                 token_callback(remaining)
                 clr.print_ai_token(remaining)
+                final_speech = (speech_buf + remaining).strip()
+                if final_speech:
+                    self._speak_async(final_speech)
+            
             clr.print_ai_end()
 
             shell_commands = stream_filter.shell_commands
             action_commands = stream_filter.action_commands
+            code_commands = stream_filter.code_commands
         else:
-            # ── Non-streaming path (fallback) ───────────────────────────
+            # ── Non-streaming path ────────────────────────────────────
+            _first_token_received.set()
             llm_response = self.brain.generate_response(command_text)
             action_reqs, shell_commands = extract_actions(llm_response)
-            # Map action_reqs to action_commands strings for compatibility with the rest of this method
             action_commands = [req.raw_text for req in action_reqs]
+            code_commands = [req.target for req in action_reqs if req.action_type == ActionType.EXEC_CODE]
+            action_commands = [req.raw_text for req in action_reqs if req.action_type != ActionType.EXEC_CODE]
 
         elapsed = time.time() - t0
-        clr.print_debug(f"  Response in {elapsed:.2f}s")
-        logger.info("LLM responded in %.2fs (%d chars)", elapsed, len(llm_response))
+        logger.info("LLM responded in %.2fs", elapsed)
 
         if not llm_response:
-            clr.print_error("No response received.")
-            return "I didn't get a response. Please try again."
+            return "I'm sorry, sir, I didn't get a response. Could you repeat that?"
 
-        # Repetition detector guardrail
-        lines = llm_response.split('\n')
-        line_counts = {}
-        for line in lines:
-            line = line.strip()
-            if line:
-                line_counts[line] = line_counts.get(line, 0) + 1
-                if line_counts[line] >= 3:
-                    clr.print_warning("Model produced repetitive output.")
-                    return "Model produced repetitive output — falling back to conversational mode"
+        # Conversational cleanup for return string
+        from Jarvis.core.system.action_router import ACTION_TAG_PATTERN, SHELL_TAG_PATTERN, EXEC_CODE_TAG_PATTERN
+        clean_text = SHELL_TAG_PATTERN.sub('', llm_response)
+        clean_text = ACTION_TAG_PATTERN.sub('', clean_text)
+        clean_text = EXEC_CODE_TAG_PATTERN.sub('', clean_text).strip()
 
-        if not shell_commands and not action_commands:
-            # Pure conversational response
+        if not shell_commands and not action_commands and not code_commands:
             if not token_callback:
                 clr.print_ai(llm_response)
+                self._speak_async(llm_response)
             return llm_response
-
-        # Conversational part (outside tags) — for TTS
-        from Jarvis.core.system.action_router import ACTION_TAG_PATTERN, SHELL_TAG_PATTERN
-        clean_text = SHELL_TAG_PATTERN.sub('', llm_response)
-        clean_text = ACTION_TAG_PATTERN.sub('', clean_text).strip()
 
         results = []
         if clean_text:
             if not token_callback:
                 clr.print_ai(clean_text)
+                self._speak_async(clean_text)
             results.append(clean_text)
 
-        # Execute [ACTION] tags via ActionRouter
+        # ── Execution Phase ──
+        
+        # 1. Execute Actions
         for action_str in action_commands:
-            action_str = action_str.strip()
-            if not action_str:
-                continue
-
             from Jarvis.core.system.action_router import parse_action_tag
             action_req = parse_action_tag(action_str)
             if action_req:
-                logger.info("Executing LLM action: %s -> %s", action_req.action_type.value, action_req.target)
                 clr.print_info(f"  Action: {action_req.action_type.value} -> {action_req.target}")
                 action_result = self.action_router.execute_action(action_req)
                 self.brain.memory.add("system", f"Action result: {action_result.message}")
-                if action_result.output and action_result.output != action_result.message:
-                    results.append(f"Output:\n{action_result.output}")
-                else:
-                    results.append(action_result.message)
-            else:
-                logger.warning("Could not parse action: %s", action_str)
-                results.append(f"Unknown action: {action_str}")
+                results.append(action_result.message)
 
-        # Execute [SHELL] tags via ActionRouter (unified safety gate)
+        # 2. Execute Shell Commands
         for cmd in shell_commands:
             cmd = cmd.strip()
-            if not cmd:
-                continue
+            if not cmd: continue
 
-            logger.info("Executing LLM-generated shell command: %s", cmd)
+            # If it's a "heavy" command, notify the user
+            is_light = re.match(r"^(ls|dir|get-|type|cat|whoami|hostname|pwd|cd|ipconfig)\b", cmd, re.I)
+            if not is_light:
+                self._speak_async("Executing that command now, sir.")
+            
             clr.print_shell(cmd)
-
             shell_output = self._execute_shell(cmd, from_llm=True)
-
-            # Check if command was blocked or denied
-            if "Blocked dangerous" in shell_output or "cancelled" in shell_output:
-                clr.print_warning(f"\u26a0\ufe0f  {shell_output}")
-                self.brain.memory.add("system", shell_output)
-                results.append(shell_output)
-                continue
-
-            # Feed the output back into the LLM's memory
+            
+            # Feed back to memory
             self.brain.memory.add("system", f"Output of `{cmd}`:\n{shell_output}")
+            
+            # Completion acknowledgment
+            if not is_light and "Error" not in shell_output and "Blocked" not in shell_output:
+                self._speak_async("Command finished.")
 
             if shell_output and shell_output != "Command executed.":
-                results.append(f"Output:\n{shell_output}")
+                results.append(f"Result of `{cmd}`:\n{shell_output}")
             else:
-                results.append(f"Done: {cmd}")
-
-            # Error auto-recovery
-            is_error = shell_output.startswith("Error:") or shell_output.startswith("Shell Error:")
-            if is_error and depth < 2:
-                clr.print_warning(f"Command failed. Auto-recovering (attempt {depth + 1}/2)...")
-                if token_callback:
-                    token_callback("\n\n[Auto-recovering from error...]\n\n")
-                
-                recovery_prompt = (
-                    f"The command `{cmd}` failed with the following output:\n"
-                    f"{shell_output}\n\n"
-                    "Please analyze the error, explain what went wrong briefly, "
-                    "and provide a corrected command wrapped in [SHELL] tags."
-                )
-                recovery_result = self._process_with_llm(
-                    recovery_prompt, 
-                    depth=depth + 1,
-                    token_callback=token_callback,
-                    begin_callback=None
-                )
-                results.append(f"--- Auto-Recovery ---\n{recovery_result}")
+                results.append(f"Successfully executed `{cmd}`.")
 
         return "\n".join(results)
+
+    def _speak_async(self, text: str) -> None:
+        """Helper to speak text via TTS in a background thread if available."""
+        if self.tts and text.strip():
+            # Clean text of tags just in case
+            clean = re.sub(r"\[/?(ACTION|SHELL|EXEC_CODE|SYSTEMINFO).*?\]", "", text, flags=re.I).strip()
+            if clean:
+                self.tts.speak(clean)
 
     # ── Shell Execution ─────────────────────────────────────────────────────
 
@@ -505,6 +676,25 @@ class Orchestrator:
         )
         print(f"\n[DENIED] No confirmation callback for: {clr.shell(command)}")
         return False
+
+    # ── Capability Commands ──────────────────────────────────────────────────
+
+    def _handle_capabilities_command(self) -> str:
+        """Explain the 3-tier permission sandbox (GREEN/YELLOW/RED)."""
+        return (
+            "Jarvis Permission Sandbox (3-Tier Model):\n"
+            "──────────────────────────────────────────\n"
+            "Tier GREEN (Auto-execute):\n"
+            "  - Allowed: App launch, URL open, system info, web search, media play, read files.\n"
+            "  - No confirmation required.\n\n"
+            "Tier YELLOW (Confirm first):\n"
+            "  - Allowed: Write files, create directories, run arbitrary shell commands, kill processes.\n"
+            "  - Jarvis will ALWAYS ask for your permission before proceeding.\n\n"
+            "Tier RED (Blocked):\n"
+            "  - Blocked: Registry edits, BIOS changes, format drives, shutdown, user account changes.\n"
+            "  - These operations are restricted for your safety.\n\n"
+            "You can also use 'shell confirmation on' to require confirmation for ALL commands."
+        )
 
     # ── Meta-Commands (llm/brain control) ───────────────────────────────────
 

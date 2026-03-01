@@ -1,176 +1,196 @@
+"""
+Visuals Module — Voice Wave Visualizer
+=======================================
+Replaces the animated orb with a dynamic, multi-bar voice waveform.
+States:
+  - waiting:    Idle slow breathing wave in cyan
+  - listening:  Active taller bars reacting to "microphone" input (simulated)
+  - processing: Fast, bright magenta/purple waves
+  - speaking:   Smooth flowing light-blue wave for TTS output
+"""
+
 import math
 import random
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import (QPainter, QBrush, QColor, QRadialGradient,
-                         QConicalGradient, QPen, QLinearGradient)
+from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QPen, QBrush
 from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF
 
 
-class ThinkingOrb(QWidget):
+# Keep the old name as an alias so existing imports don't break
+ThinkingOrb = None  # Will be replaced at bottom of file
+
+
+class VoiceWave(QWidget):
     """
-    Premium animated orb with state-dependent visual effects:
-    - Idle/Waiting: Calm breathing cyan glow
-    - Listening: Pulsing green with ripple rings
-    - Processing: Fast spinning magenta with particle trails
+    Premium animated voice waveform with state-dependent visual effects.
+
+    States:
+      waiting    — calm sine wave, soft cyan glow
+      listening  — tall reactive bars, vivid green
+      processing — fast choppy wave, magenta/purple
+      speaking   — smooth flowing wave, electric blue
     """
+
+    NUM_BARS = 32           # Number of waveform bars
+    BAR_SPACING_RATIO = 0.5 # Gap between bars as fraction of bar width
+
+    # Per-state colour palettes  (top, bottom)
+    _PALETTES = {
+        "waiting":    (QColor(0, 255, 255, 200),   QColor(0, 100, 200, 60)),
+        "listening":  (QColor(0, 255, 120, 220),   QColor(0, 160, 80, 80)),
+        "processing": (QColor(220, 60, 255, 230),  QColor(255, 0, 150, 80)),
+        "speaking":   (QColor(0, 180, 255, 220),   QColor(0, 80, 200, 80)),
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(200, 200)
+        self.setMinimumSize(300, 120)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # Animation state
-        self.angle = 0.0
-        self.pulse = 0.0
-        self.pulse_dir = 1
-        self.ripple_radius = 0.0
-        self.particles = []
         self.state = "waiting"
+        self._phase = 0.0        # Phase offset for sine motion
+        self._tick_count = 0
+        # Per-bar heights (0.0 → 1.0) for smooth interpolation
+        self._heights = [0.0] * self.NUM_BARS
+        self._targets = [0.0] * self.NUM_BARS
 
-        # Colors
-        self.primary = QColor(0, 255, 255)      # Cyan
-        self.secondary = QColor(0, 100, 200)     # Deep blue
+        # Glow pulse
+        self._glow_pulse = 0.0
+        self._glow_dir = 1
 
-        # Animation timer - 60fps
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
-        self.timer.start(16)
+        self.timer.start(16)  # 60 fps
 
-    def set_state(self, state_name):
-        """Thread-safe state change (called via signal)."""
-        self.state = state_name
-        if state_name == "listening":
-            self.primary = QColor(0, 255, 120)       # Vibrant green
-            self.secondary = QColor(0, 180, 80)
-            self.ripple_radius = 0.0
-        elif state_name == "processing":
-            self.primary = QColor(200, 50, 255)       # Purple-magenta
-            self.secondary = QColor(255, 0, 150)
-            self._spawn_particles()
-        else:  # waiting
-            self.primary = QColor(0, 255, 255)        # Cyan
-            self.secondary = QColor(0, 100, 200)
+    # ── Public API ──────────────────────────────────────────────────────
+
+    def set_state(self, state_name: str):
+        """Switch visual state. Called from the main thread."""
+        valid = ("waiting", "listening", "processing", "speaking")
+        self.state = state_name if state_name in valid else "waiting"
+
+    # ── Animation ────────────────────────────────────────────────────────
 
     def _tick(self):
-        """Main animation tick."""
-        # Rotation
-        speed = 8.0 if self.state == "processing" else 2.0
-        self.angle = (self.angle + speed) % 360
+        self._tick_count += 1
 
-        # Breathing pulse
-        pulse_speed = 0.06 if self.state == "processing" else 0.025
-        self.pulse += pulse_speed * self.pulse_dir
-        if self.pulse >= 1.0:
-            self.pulse_dir = -1
-        elif self.pulse <= 0.0:
-            self.pulse_dir = 1
+        # Phase speed — how fast the wave scrolls
+        phase_speed = {
+            "waiting":    0.04,
+            "listening":  0.09,
+            "processing": 0.18,
+            "speaking":   0.07,
+        }.get(self.state, 0.04)
+        self._phase += phase_speed
 
-        # Ripple for listening
-        if self.state == "listening":
-            self.ripple_radius += 1.5
-            if self.ripple_radius > 120:
-                self.ripple_radius = 0.0
+        # Recompute target heights
+        self._compute_targets()
 
-        # Update particles
-        if self.state == "processing":
-            for p in self.particles:
-                p['r'] += p['speed']
-                p['a'] += p['rot']
-                p['life'] -= 0.02
-            self.particles = [p for p in self.particles if p['life'] > 0]
-            if len(self.particles) < 15:
-                self._spawn_particles()
+        # Smooth interpolation toward targets
+        lerp = 0.18 if self.state in ("processing", "listening") else 0.10
+        for i in range(self.NUM_BARS):
+            self._heights[i] += (self._targets[i] - self._heights[i]) * lerp
+
+        # Glow pulse
+        glow_speed = 0.04 if self.state in ("processing", "speaking") else 0.018
+        self._glow_pulse += glow_speed * self._glow_dir
+        if self._glow_pulse >= 1.0:
+            self._glow_dir = -1
+        elif self._glow_pulse <= 0.0:
+            self._glow_dir = 1
 
         self.update()
 
-    def _spawn_particles(self):
-        """Spawn orbiting particles."""
-        for _ in range(5):
-            self.particles.append({
-                'r': random.uniform(20, 40),
-                'a': random.uniform(0, 360),
-                'speed': random.uniform(0.3, 1.0),
-                'rot': random.uniform(2, 6),
-                'size': random.uniform(2, 5),
-                'life': 1.0
-            })
+    def _compute_targets(self):
+        """Compute target bar heights based on current state."""
+        n = self.NUM_BARS
+
+        if self.state == "waiting":
+            # Slow, smooth, shallow sine — like breathing
+            for i in range(n):
+                t = self._phase + (i / n) * math.pi * 2
+                self._targets[i] = 0.12 + 0.12 * math.sin(t)
+
+        elif self.state == "listening":
+            # Multi-harmonic active wave — simulates mic input
+            for i in range(n):
+                t = self._phase + (i / n) * math.pi * 2
+                base = 0.3 * math.sin(t) + 0.2 * math.sin(t * 2 + 0.5)
+                noise = 0.15 * math.sin(t * 5 + self._tick_count * 0.1)
+                self._targets[i] = max(0.05, 0.5 + base + noise)
+
+        elif self.state == "processing":
+            # Fast choppy / glitchy wave
+            for i in range(n):
+                t = self._phase * 2 + (i / n) * math.pi * 3.5
+                glitch = random.gauss(0, 0.08) if random.random() < 0.1 else 0
+                self._targets[i] = max(0.05,
+                    0.45 + 0.40 * math.sin(t) + 0.15 * math.sin(t * 3) + glitch
+                )
+
+        elif self.state == "speaking":
+            # Smooth flowing multi-harmonic — TTS output waveform
+            for i in range(n):
+                t = self._phase + (i / n) * math.pi * 2
+                self._targets[i] = max(0.06,
+                    0.35 + 0.28 * math.sin(t) + 0.12 * math.sin(t * 2 + 1)
+                )
+
+    # ── Paint ────────────────────────────────────────────────────────────
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         w, h = self.width(), self.height()
-        cx, cy = w / 2, h / 2
-        base_radius = min(w, h) / 2 - 20
-        if base_radius < 20:
-            base_radius = 20
+        palette_top, palette_bot = self._PALETTES.get(
+            self.state, self._PALETTES["waiting"]
+        )
 
-        # Pulsing radius
-        pulse_amount = base_radius * 0.08 * self.pulse
-        radius = base_radius + pulse_amount
+        # Total bar width (including spacing)
+        n = self.NUM_BARS
+        total_gap_ratio = self.BAR_SPACING_RATIO
+        bar_w = w / (n + (n - 1) * total_gap_ratio)
+        gap_w = bar_w * total_gap_ratio
 
-        # === Outer Glow ===
-        glow_radius = radius * 1.6
-        glow_grad = QRadialGradient(cx, cy, glow_radius)
-        glow_color = QColor(self.primary)
-        glow_color.setAlpha(int(40 + 20 * self.pulse))
-        glow_grad.setColorAt(0, glow_color)
-        glow_grad.setColorAt(0.5, QColor(self.primary.red(), self.primary.green(), self.primary.blue(), 10))
-        glow_grad.setColorAt(1, QColor(0, 0, 0, 0))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(glow_grad))
-        painter.drawEllipse(QPointF(cx, cy), glow_radius, glow_radius)
+        center_y = h / 2
 
-        # === Ripple rings (listening state) ===
-        if self.state == "listening" and self.ripple_radius > 0:
-            for i in range(3):
-                rr = self.ripple_radius - i * 30
-                if rr > 0:
-                    alpha = max(0, int(100 - rr * 0.8))
-                    ring_color = QColor(self.primary.red(), self.primary.green(), self.primary.blue(), alpha)
-                    pen = QPen(ring_color, 2)
-                    painter.setPen(pen)
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawEllipse(QPointF(cx, cy), rr, rr)
+        for i in range(n):
+            bar_h = max(3.0, self._heights[i] * h * 0.85)
+            x = i * (bar_w + gap_w)
+            y = center_y - bar_h / 2
 
-        # === Particle trails (processing state) ===
-        if self.state == "processing":
-            for p in self.particles:
-                px = cx + p['r'] * math.cos(math.radians(p['a']))
-                py = cy + p['r'] * math.sin(math.radians(p['a']))
-                alpha = int(200 * p['life'])
-                pc = QColor(self.primary.red(), self.primary.green(), self.primary.blue(), alpha)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(pc))
-                painter.drawEllipse(QPointF(px, py), p['size'], p['size'])
+            # Fill gradient top→bottom using state palette
+            grad = QLinearGradient(x, y, x, y + bar_h)
+            top = QColor(palette_top)
+            top.setAlpha(max(60, min(240, int(180 + 60 * self._heights[i]))))
+            bot = QColor(palette_bot)
+            bot.setAlpha(max(30, int(80 * self._heights[i])))
+            grad.setColorAt(0.0, top)
+            grad.setColorAt(1.0, bot)
 
-        # === Main Orb (conical gradient) ===
-        conical = QConicalGradient(cx, cy, self.angle)
-        conical.setColorAt(0.0, self.primary)
-        conical.setColorAt(0.25, self.secondary)
-        conical.setColorAt(0.5, self.primary)
-        conical.setColorAt(0.75, self.secondary)
-        conical.setColorAt(1.0, self.primary)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(grad))
 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(conical))
-        painter.drawEllipse(QPointF(cx, cy), radius, radius)
+            # Rounded capsule shape
+            radius = bar_w / 2
+            painter.drawRoundedRect(
+                QRectF(x, y, bar_w, bar_h), radius, radius
+            )
 
-        # === Inner highlight (depth effect) ===
-        inner_grad = QRadialGradient(cx - radius * 0.2, cy - radius * 0.3, radius * 0.8)
-        highlight = QColor(255, 255, 255, int(60 + 30 * self.pulse))
-        inner_grad.setColorAt(0, highlight)
-        inner_grad.setColorAt(0.4, QColor(255, 255, 255, 10))
-        inner_grad.setColorAt(1, QColor(0, 0, 0, 0))
-        painter.setBrush(QBrush(inner_grad))
-        painter.drawEllipse(QPointF(cx, cy), radius * 0.9, radius * 0.9)
-
-        # === Core bright spot ===
-        core_grad = QRadialGradient(cx, cy, radius * 0.3)
-        core_color = QColor(255, 255, 255, int(80 + 40 * self.pulse))
-        core_grad.setColorAt(0, core_color)
-        core_grad.setColorAt(1, QColor(0, 0, 0, 0))
-        painter.setBrush(QBrush(core_grad))
-        painter.drawEllipse(QPointF(cx, cy), radius * 0.3, radius * 0.3)
+            # Subtle glow behind each bar
+            glow_alpha = int(20 + 15 * self._glow_pulse)
+            glow = QColor(palette_top)
+            glow.setAlpha(glow_alpha)
+            painter.setBrush(QBrush(glow))
+            painter.drawRoundedRect(
+                QRectF(x - 1, y - 2, bar_w + 2, bar_h + 4), radius + 1, radius + 1
+            )
 
         painter.end()
+
+
+# ── Backward-compat alias ─────────────────────────────────────────────────────
+# So any code that still does `from Jarvis.output.visuals import ThinkingOrb`
+# receives the new VoiceWave widget instead without needing code changes.
+ThinkingOrb = VoiceWave

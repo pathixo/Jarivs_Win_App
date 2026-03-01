@@ -7,7 +7,7 @@ from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QRadialGradient, QTextCu
 
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
-from Jarvis.output.visuals import ThinkingOrb
+from Jarvis.output.visuals import VoiceWave
 
 class MainWindow(QMainWindow):
     """Main Jarvis window with thinking orb, status bar, and command input panel."""
@@ -123,15 +123,16 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.terminal_btn)
         header_layout.addWidget(self.toggle_btn)
 
-        # ─── 2. Orb Container ───────────────────────────────────────────
+        # ─── 2. Voice Wave Container ────────────────────────────────────
         self.orb_container = QFrame()
         self.orb_container.setStyleSheet("background: transparent; border: none;")
         orb_layout = QVBoxLayout(self.orb_container)
         orb_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        orb_layout.setContentsMargins(20, 16, 20, 8)
 
-        # The Thinking Orb
-        self.orb = ThinkingOrb()
-        self.orb.setFixedSize(200, 200)
+        # The Voice Wave visualizer (replaces old Orb)
+        self.orb = VoiceWave()
+        self.orb.setFixedSize(360, 110)
 
         # State Text
         self.state_text = QLabel("Initializing systems...")
@@ -139,7 +140,7 @@ class MainWindow(QMainWindow):
         self.state_text.setFont(QFont("Segoe UI", 12))
         self.state_text.setStyleSheet(
             "color: #a8b2d1; background: transparent; "
-            "margin-top: 20px; border: none;"
+            "margin-top: 12px; border: none;"
         )
 
         orb_layout.addWidget(self.orb)

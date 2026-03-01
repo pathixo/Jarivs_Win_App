@@ -45,16 +45,76 @@ class WindowsBackend(SystemBackend):
 
         Priority:
         1. AppRegistry lookup (exact + fuzzy match)
-        2. Direct Start-Process fallback for unknown apps
+        2. Power-user discovery (Get-Command / common path search)
+        3. Direct Start-Process fallback for unknown apps
         """
-        # Try registry first
+        # 1. Try registry first
         entry = self._app_registry.resolve(app_name)
         if entry:
             return self._launch_registered_app(entry, args)
 
-        # Fallback: try launching directly via Start-Process
-        logger.info("App '%s' not in registry, trying direct launch", app_name)
+        # 2. Power-user discovery fallback
+        discovered_path = self._find_app_path(app_name)
+        if discovered_path:
+            logger.info("App '%s' discovered at: %s", app_name, discovered_path)
+            return self._launch_direct(discovered_path, args)
+
+        # 3. Last resort: try launching directly via Start-Process
+        logger.info("App '%s' not found, trying direct name launch", app_name)
         return self._launch_direct(app_name, args)
+
+    def _find_app_path(self, app_name: str) -> Optional[str]:
+        """
+        Power-user app discovery: search for an executable by name.
+        Uses Get-Command and common install directory searches.
+        """
+        # 1. Try Get-Command (checks PATH and aliases)
+        try:
+            # We use PowerShell to find the executable path
+            cmd = f"Get-Command -Name '*{app_name}*' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1"
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=5
+            )
+            path = result.stdout.strip()
+            if path and os.path.exists(path):
+                return path
+        except Exception:
+            pass
+
+        # 2. Search common install directories (depth-limited for performance)
+        search_dirs = [
+            os.environ.get("ProgramFiles", "C:\\Program Files"),
+            os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"),
+            os.path.join(os.environ.get("LocalAppData", ""), "Programs"),
+        ]
+        
+        for base_dir in search_dirs:
+            if not os.path.exists(base_dir):
+                continue
+            try:
+                # Search for .exe files matching the name in the first 2 levels of subdirectories
+                ps_search = (
+                    f"Get-ChildItem -Path '{base_dir}' -Filter '*{app_name}*.exe' -Recurse -Depth 2 -ErrorAction SilentlyContinue | "
+                    "Select-Object -ExpandProperty FullName -First 1"
+                )
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_search],
+                    capture_output=True,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=5
+                )
+                path = result.stdout.strip()
+                if path and os.path.exists(path):
+                    return path
+            except Exception:
+                continue
+
+        return None
 
     def _launch_registered_app(
         self,
@@ -114,7 +174,7 @@ class WindowsBackend(SystemBackend):
                     success=False,
                     message=f"Unknown launch method '{method}' for {entry.display_name}.",
                     error=f"Unsupported launch_method: {method}",
-                    action_type=ActionType.LAUNCH_APP,
+                    action_type=ActionType.APP_NOT_FOUND,
                 )
 
         except FileNotFoundError:
@@ -122,7 +182,14 @@ class WindowsBackend(SystemBackend):
                 success=False,
                 message=f"{entry.display_name} doesn't appear to be installed.",
                 error=f"FileNotFoundError launching {entry.launch_target}",
-                action_type=ActionType.LAUNCH_APP,
+                action_type=ActionType.APP_NOT_FOUND,
+            )
+        except PermissionError as e:
+            return ActionResult(
+                success=False,
+                message=f"Access denied trying to launch {entry.display_name}.",
+                error=str(e),
+                action_type=ActionType.APP_NOT_FOUND,
             )
         except Exception as e:
             logger.error("Failed to launch %s: %s", entry.display_name, e)
@@ -130,7 +197,7 @@ class WindowsBackend(SystemBackend):
                 success=False,
                 message=f"Error opening {entry.display_name}: {e}",
                 error=str(e),
-                action_type=ActionType.LAUNCH_APP,
+                action_type=ActionType.APP_NOT_FOUND,
             )
 
     def _launch_direct(
@@ -156,12 +223,19 @@ class WindowsBackend(SystemBackend):
                 action_type=ActionType.LAUNCH_APP,
                 risk_level=RiskLevel.MEDIUM,
             )
+        except FileNotFoundError:
+            return ActionResult(
+                success=False,
+                message=f"The application '{app_name}' was not found.",
+                error="FileNotFoundError",
+                action_type=ActionType.APP_NOT_FOUND,
+            )
         except Exception as e:
             return ActionResult(
                 success=False,
                 message=f"Could not find or open '{app_name}'.",
                 error=str(e),
-                action_type=ActionType.LAUNCH_APP,
+                action_type=ActionType.APP_NOT_FOUND,
             )
 
     # ── URL Opening ─────────────────────────────────────────────────────
@@ -252,7 +326,7 @@ class WindowsBackend(SystemBackend):
                 error=error,
                 return_code=result.returncode,
                 command=command,
-                action_type=ActionType.SHELL_COMMAND,
+                action_type=ActionType.SHELL_COMMAND if success else ActionType.CODE_EXEC_ERROR,
                 risk_level=RiskLevel.MEDIUM,
             )
 
@@ -263,7 +337,19 @@ class WindowsBackend(SystemBackend):
                 error="TimeoutExpired",
                 timed_out=True,
                 command=command,
-                action_type=ActionType.SHELL_COMMAND,
+                action_type=ActionType.CODE_EXEC_ERROR,
+            )
+        except subprocess.CalledProcessError as e:
+            return ShellResult(
+                success=False,
+                message=f"Command failed with exit code {e.returncode}.",
+                output=e.stdout + e.stderr,
+                stdout=e.stdout,
+                stderr=e.stderr,
+                error=e.stderr or f"Exit code {e.returncode}",
+                return_code=e.returncode,
+                command=command,
+                action_type=ActionType.CODE_EXEC_ERROR,
             )
         except FileNotFoundError:
             return ShellResult(
@@ -271,7 +357,7 @@ class WindowsBackend(SystemBackend):
                 message="Error: PowerShell not found. Is it installed?",
                 error="PowerShell not found",
                 command=command,
-                action_type=ActionType.SHELL_COMMAND,
+                action_type=ActionType.CODE_EXEC_ERROR,
             )
         except Exception as e:
             logger.error("Shell execution error: %s", e)
@@ -280,8 +366,85 @@ class WindowsBackend(SystemBackend):
                 message=f"Shell Error: {e}",
                 error=str(e),
                 command=command,
-                action_type=ActionType.SHELL_COMMAND,
+                action_type=ActionType.CODE_EXEC_ERROR,
             )
+
+    def exec_python(self, code: str) -> ActionResult:
+        """Execute Python code by writing to a temp file and running it."""
+        import tempfile
+        import sys
+
+        # Basic safety: block some obvious dangerous imports
+        dangerous = ["os.remove", "shutil.rmtree", "os.rmdir", "subprocess", "os.system"]
+        for d in dangerous:
+            if d in code:
+                return ActionResult(
+                    success=False,
+                    message=f"Security Alert: Use of '{d}' is not allowed in executed code.",
+                    error="Security Block",
+                    action_type=ActionType.CODE_EXEC_ERROR,
+                    risk_level=RiskLevel.HIGH
+                )
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
+                f.write(code)
+                tmp_path = f.name
+
+            # Run using the current python executable
+            process = subprocess.run(
+                [sys.executable, tmp_path],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=30,
+                check=True # Use check=True to raise CalledProcessError on failure
+            )
+
+            output = process.stdout.strip()
+            if not output:
+                output = "Code executed successfully (no output)."
+
+            return ActionResult(
+                success=True,
+                message="Code executed successfully",
+                output=output,
+                action_type=ActionType.EXEC_CODE,
+                risk_level=RiskLevel.MEDIUM
+            )
+
+        except subprocess.CalledProcessError as e:
+            return ActionResult(
+                success=False,
+                message="Code execution failed",
+                output=f"{e.stdout}\n{e.stderr}".strip(),
+                error=e.stderr or f"Exit code {e.returncode}",
+                action_type=ActionType.CODE_EXEC_ERROR,
+                risk_level=RiskLevel.MEDIUM
+            )
+        except subprocess.TimeoutExpired:
+            return ActionResult(
+                success=False,
+                message="Code execution timed out",
+                error="TimeoutExpired",
+                action_type=ActionType.CODE_EXEC_ERROR,
+                risk_level=RiskLevel.MEDIUM
+            )
+        except Exception as e:
+            logger.error("Python execution error: %s", e)
+            return ActionResult(
+                success=False,
+                message=f"Python execution error: {str(e)}",
+                error=str(e),
+                action_type=ActionType.CODE_EXEC_ERROR
+            )
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except:
+                    pass
 
     @staticmethod
     def _is_ps_noise(stderr: str) -> bool:

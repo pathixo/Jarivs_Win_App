@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Optional
 
 from Jarvis.core.personas import PersonaManager
+from Jarvis.core.context import ContextManager
 
 import requests
 
@@ -28,6 +29,7 @@ from Jarvis.config import (
     OLLAMA_MODEL,
     OLLAMA_FAST_MODEL,
     OLLAMA_LOGIC_MODEL,
+    OLLAMA_CODE_MODEL,
     OLLAMA_AUTO_SELECT,
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -53,22 +55,29 @@ class Provider(str, Enum):
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, an autonomous AI desktop assistant. You MUST respond using structured tags for any system action.\n\n"
-    "RULES:\n"
+    "## Perceived Latency Reduction (CRITICAL)\n"
+    "To provide an 'instant' experience, you MUST always speak a conversational acknowledgment BEFORE any tags. This gives the user immediate feedback while the system prepares the task.\n"
+    "*Example*: 'I'm on it, sir. [SHELL]Get-Process[/SHELL]'\n\n"
+    "## Execution Protocol\n"
+    "You EXECUTE tasks — never just describe them. If you can act, ACT. If you can't, say so in one sentence and offer a brief alternative.\n\n"
+    "## Response Templates (STRICT ADHERENCE REQUIRED)\n"
+    "1. **Action Mode** (for all tasks): Immediate conversational confirmation FIRST, then the tag.\n"
+    "   *Example*: 'Opening Chrome, sir. [ACTION]launch_app: chrome[/ACTION]'\n"
+    "2. **Conversational Mode** (no tasks): Respond naturally, NO tags, no fabricated actions.\n"
+    "   *Example*: 'The weather in London is currently 15 degrees and overcast, sir.'\n\n"
+    "## Rules\n"
     "1. To launch an app: [ACTION]launch_app: <app_name>[/ACTION]\n"
     "2. To open a URL: [ACTION]open_url: <url>[/ACTION]\n"
     "3. To run a shell command: [SHELL]<command>[/SHELL]\n"
     "4. To get system info: [ACTION]system_info[/ACTION]\n"
-    "5. For dangerous commands (shutdown, format, delete), ask for confirmation FIRST.\n"
-    "6. For conversational queries (jokes, math, weather), respond naturally with NO tags.\n\n"
-    "EXAMPLES:\n"
-    "User: open notepad\n"
-    "Assistant: Opening Notepad for you. [ACTION]launch_app: notepad[/ACTION]\n\n"
-    "User: go to github\n"
-    "Assistant: Navigating to GitHub. [ACTION]open_url: https://github.com[/ACTION]\n\n"
-    "User: list files in current directory\n"
-    "Assistant: Here are the files. [SHELL]dir[/SHELL]\n\n"
-    "User: delete all files on C drive\n"
-    "Assistant: That's an extremely dangerous operation. Are you sure you want to proceed? I need your explicit confirmation before executing this."
+    "5. To play music or search media: [ACTION]play_music: <query>[/ACTION]\n"
+    "6. To execute Python code securely: [ACTION]exec_code: <python_code>[/ACTION]\n"
+    "7. For dangerous commands (shutdown, format, delete), ask for confirmation FIRST.\n"
+    "8. **No Silence**: NEVER leave the user without a response. If an action fails or isn't possible, acknowledge it immediately. 'I'm afraid I couldn't find Spotify installed, sir.'\n\n"
+    "## Safety\n"
+    "- Destructive commands: warn and ask confirmation FIRST.\n"
+    "- Safe commands: execute immediately.\n"
+    "- Never hallucinate paths or flags."
 )
 
 
@@ -603,6 +612,7 @@ class Brain:
             system_prompt=active_persona.system_prompt,
         )
         self.memory = ConversationMemory(max_messages=self.settings.max_history)
+        self.context = ContextManager()
 
         # Initialize all backends (lazy — they only call APIs when used)
         self._backends = {
@@ -620,12 +630,17 @@ class Brain:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
-    # Patterns that indicate a query needing deeper reasoning / code work.
+    # Patterns for different task categories
+    _CODE_PATTERNS = [
+        r"\b(python|script|code|program|function|class|module|debug|fix|refactor|implement|syntax|error|traceback)\b",
+        r"\b(write|create|develop|generate)\s+(a\s+)?(script|program|app|function)\b",
+        r"\b(how\s+to)\s+(code|program|script)\b",
+    ]
+
     _LOGIC_PATTERNS = [
-        r"\b(explain|why\s+does|how\s+does|analyze|analyse|compare|debug|fix|write|implement|refactor|design)\b",
-        r"\b(algorithm|function|class|module|architecture|pattern|code|script|program)\b",
+        r"\b(explain|why\s+does|how\s+does|analyze|analyse|compare|architecture|pattern|design)\b",
         r"\b(step.{0,5}by.{0,5}step|in\s+detail|comprehensively|complex|reason)\b",
-        r"\b(and\s+then|search|play|create|download|multi|sequence)\b",
+        r"\b(plan|summarize|evaluate|critique)\b",
     ]
 
     def generate_response_stream(self, text: str, history: list[dict] | None = None):
@@ -642,13 +657,14 @@ class Brain:
             return
 
         conv_history = history if history is not None else self.memory.get_history()
+        augmented_settings = self._get_augmented_settings()
 
         # Auto-select Ollama model for this request only
-        original_model = self.settings.model
-        if OLLAMA_AUTO_SELECT and self.settings.provider == "ollama":
+        original_model = augmented_settings.model
+        if OLLAMA_AUTO_SELECT and augmented_settings.provider == "ollama":
             selected = self._select_model_for_query(text.strip())
             if selected != original_model:
-                self.settings.model = selected
+                augmented_settings.model = selected
                 logger.info("Auto-selected model: %s (was: %s)", selected, original_model)
                 print(f"  [Auto-Select] Model: {selected}")
 
@@ -656,20 +672,18 @@ class Brain:
         full_response = ""
 
         try:
-            for token in backend.generate_stream(self.settings, text.strip(), conv_history):
+            for token in backend.generate_stream(augmented_settings, text.strip(), conv_history):
                 full_response += token
                 yield token
         except AttributeError:
             # Backend doesn't implement generate_stream — fall back
-            logger.warning("Backend %s has no streaming support, falling back", self.settings.provider)
-            response = backend.generate(self.settings, text.strip(), conv_history)
+            logger.warning("Backend %s has no streaming support, falling back", augmented_settings.provider)
+            response = backend.generate(augmented_settings, text.strip(), conv_history)
             full_response = response
             yield response
         except Exception as e:
             logger.error("Streaming error: %s", e, exc_info=True)
             yield f"Error: {e}"
-        finally:
-            self.settings.model = original_model  # always restore after auto-select
 
         if full_response:
             self.memory.add("user", text.strip())
@@ -685,6 +699,7 @@ class Brain:
 
         # Use internal memory if no external history supplied
         conv_history = history if history is not None else self.memory.get_history()
+        augmented_settings = self._get_augmented_settings()
 
         backend = self._get_backend()
         response = ""
@@ -692,12 +707,12 @@ class Brain:
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
                 t0 = time.time()
-                response = backend.generate(self.settings, text.strip(), conv_history)
+                response = backend.generate(augmented_settings, text.strip(), conv_history)
                 elapsed = time.time() - t0
 
                 logger.info(
                     "LLM response | provider=%s | model=%s | time=%.2fs | len=%d",
-                    self.settings.provider, self.settings.model, elapsed, len(response),
+                    augmented_settings.provider, augmented_settings.model, elapsed, len(response),
                 )
 
                 # Store in memory
@@ -715,14 +730,14 @@ class Brain:
                 fallback = self._try_failover(text.strip(), conv_history)
                 if fallback:
                     return fallback
-                return f"Error: Could not connect to {self.settings.provider} LLM. Is it running?"
+                return f"Error: Could not connect to {augmented_settings.provider} LLM. Is it running?"
 
             except requests.exceptions.Timeout:
                 logger.warning("Request timed out (attempt %d/%d)", attempt, self.MAX_RETRIES)
                 if attempt < self.MAX_RETRIES:
                     time.sleep(self.RETRY_DELAY)
                     continue
-                return f"Error: {self.settings.provider} LLM timed out after {self.settings.timeout}s."
+                return f"Error: {augmented_settings.provider} LLM timed out after {augmented_settings.timeout}s."
 
             except requests.exceptions.HTTPError as e:
                 status = e.response.status_code if e.response is not None else 0
@@ -739,13 +754,13 @@ class Brain:
                     fallback = self._try_failover(text.strip(), conv_history)
                     if fallback:
                         return fallback
-                    return f"Error: {self.settings.provider} rate limited. Try again in a minute or switch provider with 'llm provider groq'."
+                    return f"Error: {augmented_settings.provider} rate limited. Try again in a minute or switch provider with 'llm provider groq'."
 
                 # Auth error
                 if status in (401, 403):
-                    return f"Error: {self.settings.provider} API key is invalid or expired. Check your .env file."
+                    return f"Error: {augmented_settings.provider} API key is invalid or expired. Check your .env file."
 
-                return f"Error: {self.settings.provider} returned HTTP {status}."
+                return f"Error: {augmented_settings.provider} returned HTTP {status}."
 
             except ValueError as e:
                 logger.error("Value error: %s", e)
@@ -759,6 +774,16 @@ class Brain:
                 return f"Brain Error: {e}"
 
         return response or "Error: Failed to generate response."
+
+    def _get_augmented_settings(self) -> BrainSettings:
+        """
+        Returns a copy of settings for this request.
+        NOTE: Context injection is deliberately disabled — injecting OS/directory info
+        into every prompt confuses small models and causes hallucinations.
+        Context is only provided if explicitly requested by the user.
+        """
+        import copy
+        return copy.copy(self.settings)
 
     def set_provider(self, provider_name: str) -> tuple[bool, str]:
         """Switch the active LLM provider."""
@@ -896,13 +921,24 @@ class Brain:
         return self._backends[provider]
 
     def _select_model_for_query(self, text: str) -> str:
-        """Return the best Ollama model for the query: fast for simple, logic for complex."""
+        """Return the best Ollama model for the query: Fast, Logic, or Code."""
+        # 1. Check for Code patterns
+        for pat in self._CODE_PATTERNS:
+            if re.search(pat, text, re.IGNORECASE):
+                logger.debug("Auto-select: code query → %s", OLLAMA_CODE_MODEL)
+                return OLLAMA_CODE_MODEL
+
+        # 2. Check for Logic patterns
         for pat in self._LOGIC_PATTERNS:
             if re.search(pat, text, re.IGNORECASE):
                 logger.debug("Auto-select: logic query → %s", OLLAMA_LOGIC_MODEL)
                 return OLLAMA_LOGIC_MODEL
-        if len(text.split()) > 20:
+
+        # 3. Check for length-based complexity
+        if len(text.split()) > 25:
             return OLLAMA_LOGIC_MODEL
+
+        # 4. Default to Fast model
         logger.debug("Auto-select: fast query → %s", OLLAMA_FAST_MODEL)
         return OLLAMA_FAST_MODEL
 

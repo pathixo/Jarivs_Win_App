@@ -67,18 +67,19 @@ class TestUnifiedSafetyGate(unittest.TestCase):
     # ── HIGH commands: require confirmation ──────────────────────────────
 
     def test_high_shutdown_confirmed(self):
-        """shutdown /s should require confirmation; approved = executes."""
+        """shutdown /s is CRITICAL — always blocked, even with confirmation."""
         self.confirmed = True
         result = self.router.execute_shell("shutdown /s", from_llm=True)
-        self.assertTrue(result.success)
-        self.backend.run_shell.assert_called_once()
+        self.assertFalse(result.success)   # CRITICAL = blocked at RED tier
+        self.assertIn("Blocked", result.message)
+        self.backend.run_shell.assert_not_called()
 
     def test_high_shutdown_denied(self):
-        """shutdown /s should require confirmation; denied = not executed."""
+        """shutdown /s is CRITICAL — blocked at the RED tier."""
         self.confirmed = False
         result = self.router.execute_shell("shutdown /s", from_llm=True)
         self.assertFalse(result.success)
-        self.assertIn("cancelled", result.message)
+        self.assertIn("Blocked", result.message)
         self.backend.run_shell.assert_not_called()
 
     def test_high_rm_rf_confirmed(self):
@@ -131,12 +132,21 @@ class TestUnifiedSafetyGate(unittest.TestCase):
         result = self.router.execute_shell("Get-Date", from_llm=True)
         self.assertTrue(result.success)
 
-    def test_medium_curl_executes(self):
-        """Medium risk (curl) should execute without confirmation."""
+    def test_medium_curl_executes_with_confirmation(self):
+        """Medium risk (curl) now requires YELLOW-tier confirmation before running."""
+        self.confirmed = True
         result = self.router.execute_shell(
             "curl https://example.com", from_llm=True
         )
         self.assertTrue(result.success)
+
+    def test_medium_curl_denied_without_confirm(self):
+        """Medium risk (curl) should be blocked if user denies."""
+        self.confirmed = False
+        result = self.router.execute_shell(
+            "curl https://example.com", from_llm=True
+        )
+        self.assertFalse(result.success)
 
     # ── Audit logging ────────────────────────────────────────────────────
 
@@ -148,11 +158,13 @@ class TestUnifiedSafetyGate(unittest.TestCase):
         self.assertTrue(log[0]["from_llm"])
 
     def test_denied_commands_are_audited(self):
+        """shutdown /s is CRITICAL — logged as 'blocked', not 'denied'."""
         self.confirmed = False
         self.router.execute_shell("shutdown /s", from_llm=True)
         log = self.safety.get_audit_log(1)
         self.assertEqual(len(log), 1)
-        self.assertEqual(log[0]["outcome"], "denied")
+        # In the new 3-tier model, shutdown = CRITICAL = 'blocked'
+        self.assertIn(log[0]["outcome"], ("blocked", "denied"))
 
     def test_executed_commands_are_audited(self):
         self.router.execute_shell("echo test", from_llm=True)

@@ -473,15 +473,15 @@ brain.set_persona("professional")     # Switch persona
 |---|---|---|
 | **Feedback Loop** | Feed shell output back to LLM for verification/debugging | ✅ Done |
 | **Error Auto-Recovery** | LLM auto-suggests fixes when commands fail | ✅ Done |
-| **Task-Aware Context** | Conversation memory that remembers project context | 🔲 Planned |
+| **Task-Aware Context** | Conversation memory that remembers project context | ✅ Done |
 
 ### Phase 2: Better Models & Performance
 
 | Feature | Description | Status |
 |---|---|---|
-| Model Auto-Selection | Route simple tasks to `gemma3:1b`, complex to `llama3` | 🔲 Planned |
-| Streaming Responses | Token-by-token display for faster perceived speed | 🔲 Planned |
-| Qwen3-Coder Support | Pull and integrate `qwen2.5-coder:3b` for code tasks | 🔲 Planned |
+| Model Auto-Selection | Route simple tasks to `gemma3:1b`, complex to `llama3` | ✅ Done |
+| Streaming Responses | Token-by-token display for faster perceived speed | ✅ Done |
+| Qwen3-Coder Support | Pull and integrate `qwen2.5-coder:3b` for code tasks | ✅ Done |
 
 ### Phase 3: Safety & Sandboxing
 

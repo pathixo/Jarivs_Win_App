@@ -32,10 +32,11 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma:2b")
 
 # Ollama Model Auto-Selection
-# When enabled, Jarvis picks the fast model for simple queries and the logic
-# model for complex reasoning / code tasks.
-OLLAMA_FAST_MODEL  = os.getenv("OLLAMA_FAST_MODEL",  "gemma:2b")       # speed
-OLLAMA_LOGIC_MODEL = os.getenv("OLLAMA_LOGIC_MODEL", "llama3.2:3b")    # reasoning
+# When enabled, Jarvis picks the fast model for simple queries, the logic
+# model for complex reasoning, and the code model for programming tasks.
+OLLAMA_FAST_MODEL  = os.getenv("OLLAMA_FAST_MODEL",  "gemma:2b")              # speed
+OLLAMA_LOGIC_MODEL = os.getenv("OLLAMA_LOGIC_MODEL", "llama3.2:3b")           # reasoning
+OLLAMA_CODE_MODEL  = os.getenv("OLLAMA_CODE_MODEL",  "qwen2.5-coder:3b")     # coding
 OLLAMA_AUTO_SELECT = os.getenv("OLLAMA_AUTO_SELECT", "true").lower() == "true"
 
 # Gemini Configuration (Google Cloud)

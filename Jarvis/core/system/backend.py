@@ -83,6 +83,11 @@ class SystemBackend(ABC):
         """
         ...
 
+    @abstractmethod
+    def exec_python(self, code: str) -> ActionResult:
+        """Execute Python code securely and return result."""
+        ...
+
     # ── File System ─────────────────────────────────────────────────────
 
     @abstractmethod

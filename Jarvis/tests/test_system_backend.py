@@ -131,17 +131,19 @@ class TestSafetyEngine:
         risk, _ = safety.assess_command("Remove-Item C:\\temp -Recurse")
         assert risk == RiskLevel.HIGH
 
-    def test_registry_delete_high(self, safety):
+    def test_registry_delete_critical(self, safety):
+        """reg delete is now RED tier (CRITICAL) in the 3-tier sandbox model."""
         risk, _ = safety.assess_command("reg delete HKLM\\Software\\Test")
-        assert risk == RiskLevel.HIGH
+        assert risk == RiskLevel.CRITICAL
 
     def test_iex_high(self, safety):
         risk, _ = safety.assess_command("Invoke-Expression $code")
         assert risk == RiskLevel.HIGH
 
-    def test_shutdown_high(self, safety):
+    def test_shutdown_critical(self, safety):
+        """shutdown is now RED tier (CRITICAL) in the 3-tier sandbox model."""
         risk, _ = safety.assess_command("shutdown /s /t 0")
-        assert risk == RiskLevel.HIGH
+        assert risk == RiskLevel.CRITICAL
 
     # ── Safe commands ──
 

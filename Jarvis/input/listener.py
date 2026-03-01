@@ -8,6 +8,7 @@ import numpy as np
 import logging
 from PyQt6.QtCore import QObject, pyqtSignal
 from Jarvis.config import PORCUPINE_ACCESS_KEY
+from Jarvis.input.audio_processor import AudioProcessor
 
 
 class Listener(QObject):
@@ -39,6 +40,13 @@ class Listener(QObject):
         self._is_processing = False
         self._pa = None
         self._stream = None
+        
+        # Audio processor for wave visualization
+        self.audio_processor = AudioProcessor(
+            sample_rate=self.RATE,
+            fft_size=512,
+            num_bands=32
+        )
 
     def start(self):
         self.listening = True
@@ -63,6 +71,27 @@ class Listener(QObject):
         else:
             self.state_changed.emit("waiting")
         return self.manual_pause
+    
+    def get_audio_spectrum(self):
+        """
+        Get the current audio frequency spectrum (32 normalized bands).
+        
+        Returns:
+            np.ndarray: 32 frequency bins normalized to 0.0-1.0 range
+        """
+        return self.audio_processor.get_spectrum()
+    
+    def get_audio_spectrum_from_queue(self, timeout=0.01):
+        """
+        Get spectrum from queue without blocking.
+        
+        Args:
+            timeout: Timeout in seconds (default: 0.01)
+            
+        Returns:
+            np.ndarray or None: Spectrum data if available
+        """
+        return self.audio_processor.get_spectrum_from_queue(timeout=timeout)
 
     def _open_stream(self):
         """Open the microphone stream."""
@@ -217,6 +246,13 @@ class Listener(QObject):
                     try:
                         audio_data = np.frombuffer(data, dtype=np.int16)
                         rms = np.sqrt(np.mean(audio_data.astype(np.float32)**2))
+                        
+                        # Process audio for visualization (non-blocking)
+                        try:
+                            self.audio_processor.process_chunk(data)
+                        except Exception as e:
+                            # Don't let audio processing errors affect listening
+                            pass
                     except Exception:
                         continue
 
