@@ -48,3 +48,11 @@ output/jarvis-instruct-lora/
 output/jarvis-instruct-merged/
 logs/
 llama.cpp/
+
+# ML Model Artifacts
+output/jarvis-action.gguf
+output/jarvis-gemma-lora/
+output/jarvis-instruct-lora/
+output/jarvis-instruct-merged/
+logs/
+llama.cpp/
