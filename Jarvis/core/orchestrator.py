@@ -28,6 +28,7 @@ from typing import Optional
 from Jarvis.core.brain import Brain, Provider
 from Jarvis.core.tools import Tools
 from Jarvis.core import colors as clr
+from Jarvis.core.pipeline import eager_sentence_split, PipelineMetrics, FILLER_PHRASES, FILLER_TIMEOUT_S
 from Jarvis.core.system import (
     get_backend, ActionRouter, extract_actions, RiskLevel,
     ActionRequest, ActionType, ACTION_TAG_PATTERN, SHELL_TAG_PATTERN
@@ -572,11 +573,10 @@ class Orchestrator:
         _first_token_received = threading.Event()
         
         def _speak_filler():
-            time.sleep(0.6)
+            time.sleep(FILLER_TIMEOUT_S)
             if not _first_token_received.is_set():
-                fillers = ["Let me check that for you.", "One moment, sir.", "Looking into it.", "Processing that now."]
                 import random
-                self._speak_async(random.choice(fillers))
+                self._speak_async(random.choice(FILLER_PHRASES))
 
         threading.Thread(target=_speak_filler, daemon=True).start()
 
@@ -587,15 +587,20 @@ class Orchestrator:
 
             stream_filter = _TagStreamFilter()
             llm_response = ""
-            speech_buf = ""
             
             # Start UI block
             clr.print_ai_start()
+            t_first_token = None
+            
+            # Collect visible tokens for eager sentence splitting
+            _visible_tokens = []
             
             try:
                 for token in self.brain.generate_response_stream(command_text):
                     if not _first_token_received.is_set():
                         _first_token_received.set()
+                        t_first_token = time.time()
+                        logger.info("TTFT: %.0fms", (t_first_token - t0) * 1000)
                         
                     llm_response += token
                     visible = stream_filter.feed(token)
@@ -603,16 +608,8 @@ class Orchestrator:
                     if visible:
                         token_callback(visible)
                         clr.print_ai_token(visible)
-                        
-                        # Accumulate words for natural speech
-                        speech_buf += visible
-                        
-                        # Speak as soon as we have a full sentence or a line break
-                        if any(punct in visible for punct in ".!?\n"):
-                            sentence = speech_buf.strip()
-                            if len(sentence) > 5:
-                                self._speak_async(sentence)
-                                speech_buf = ""
+                        _visible_tokens.append(visible)
+
             except Exception as e:
                 _first_token_received.set() # Ensure filler thread doesn't trigger late
                 return self._handle_processing_error(e, also_speak=True)
@@ -621,11 +618,20 @@ class Orchestrator:
             if remaining:
                 token_callback(remaining)
                 clr.print_ai_token(remaining)
-                final_speech = (speech_buf + remaining).strip()
-                if final_speech:
-                    self._speak_async(final_speech)
+                _visible_tokens.append(remaining)
             
             clr.print_ai_end()
+
+            # ── Eager sentence flush for TTS ──
+            # Use the pipeline's sentence splitter on collected visible tokens
+            def _token_iter():
+                for t in _visible_tokens:
+                    yield t
+
+            for sentence, is_final in eager_sentence_split(_token_iter()):
+                sentence = sentence.strip()
+                if sentence and len(sentence) > 3:
+                    self._speak_async(sentence)
 
             shell_commands = stream_filter.shell_commands
             action_commands = stream_filter.action_commands

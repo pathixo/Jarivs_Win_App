@@ -6,7 +6,7 @@ import time
 import queue
 import logging
 from PyQt6.QtCore import QObject, pyqtSignal
-from Jarvis.config import TTS_VOICE, DATA_DIR
+from Jarvis.config import TTS_VOICE, DATA_DIR, TTS_ENGINE, KOKORO_MODEL_PATH, KOKORO_VOICES_PATH
 
 logger = logging.getLogger("jarvis.tts")
 
@@ -14,8 +14,28 @@ logger = logging.getLogger("jarvis.tts")
 VOICE_ENGLISH = TTS_VOICE                    # e.g. en-GB-LibbyNeural
 VOICE_HINDI   = "hi-IN-SwaraNeural"          # Female Hindi voice
 
+
 class TTS(QObject):
+    """
+    Multi-engine TTS with automatic routing.
+
+    Engine selection (TTS_ENGINE config):
+      - "auto"   → Kokoro (local GPU) with edge-tts fallback
+      - "kokoro" → Always use Kokoro ONNX (lowest latency, ~50-150ms)
+      - "edge"   → Always use edge-tts (Microsoft cloud, ~300-600ms)
+
+    Signals:
+      audio_generated(str)     — emitted with WAV/MP3 path for QMediaPlayer
+      tts_started()            — emitted when speech synthesis begins
+      tts_finished()           — emitted when all queued speech is done
+      playback_started()       — emitted when audio playback begins
+      playback_finished()      — emitted when audio playback ends
+    """
     audio_generated = pyqtSignal(str)
+    tts_started = pyqtSignal()
+    tts_finished = pyqtSignal()
+    playback_started = pyqtSignal()
+    playback_finished = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -24,14 +44,65 @@ class TTS(QObject):
         self._queue = queue.Queue()
         self._stop_event = threading.Event()
         self._language_mode = "auto"   # "auto", "en", "hi"
-        
+        self._is_speaking = False
+        self._engine = TTS_ENGINE.lower()
+
         # Ensure temp directory exists
         self._temp_dir = os.path.join(DATA_DIR, "temp_tts")
         os.makedirs(self._temp_dir, exist_ok=True)
-        
+
+        # Initialize Kokoro TTS engine (local GPU)
+        self._kokoro = None
+        if self._engine in ("auto", "kokoro"):
+            try:
+                from Jarvis.output.kokoro_tts import KokoroTTS
+                self._kokoro = KokoroTTS(
+                    model_path=KOKORO_MODEL_PATH,
+                    voices_path=KOKORO_VOICES_PATH,
+                )
+                if self._kokoro.available:
+                    logger.info("Kokoro TTS engine loaded (local GPU)")
+                else:
+                    logger.info("Kokoro TTS unavailable, will use edge-tts")
+                    self._kokoro = None
+            except Exception as e:
+                logger.warning("Kokoro TTS init failed: %s — using edge-tts", e)
+                self._kokoro = None
+
+        # Persistent event loop for edge-tts (avoids creating new loop per request)
+        self._edge_loop = asyncio.new_event_loop()
+        self._edge_loop_thread = threading.Thread(
+            target=self._run_edge_loop, daemon=True, name="edge-tts-loop"
+        )
+        self._edge_loop_thread.start()
+
         # Start the worker thread
-        self._worker_thread = threading.Thread(target=self._worker, daemon=True)
+        self._worker_thread = threading.Thread(target=self._worker, daemon=True, name="tts-worker")
         self._worker_thread.start()
+
+        # Latency telemetry
+        self._last_latency_ms = 0.0
+        self._engine_used = "none"
+
+    def _run_edge_loop(self):
+        """Run a persistent asyncio event loop for edge-tts."""
+        asyncio.set_event_loop(self._edge_loop)
+        self._edge_loop.run_forever()
+
+    @property
+    def is_speaking(self) -> bool:
+        """Whether TTS is currently generating or playing audio."""
+        return self._is_speaking
+
+    @property
+    def last_latency_ms(self) -> float:
+        """Latency of the last TTS synthesis in milliseconds."""
+        return self._last_latency_ms
+
+    @property
+    def engine_used(self) -> str:
+        """Name of the engine used for the last synthesis."""
+        return self._engine_used
 
     # ── Voice Control ────────────────────────────────────────────────────
 
@@ -180,35 +251,79 @@ class TTS(QObject):
         return text.strip()
 
     def stop(self):
-        """Clear the queue and stop current speech."""
+        """Clear the queue and stop current speech. Signal barge-in."""
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
             except queue.Empty:
                 break
-        # We don't have a direct way to stop the QMediaPlayer from here, 
-        # but clearing the queue prevents further speech.
+        self._is_speaking = False
+        self.tts_finished.emit()
 
     def _worker(self):
         """Background worker to process the speech queue."""
         while not self._stop_event.is_set():
             try:
                 text = self._queue.get(timeout=1)
+                self._is_speaking = True
+                self.tts_started.emit()
                 self._process_text(text)
                 self._queue.task_done()
+                # Check if queue is now empty
+                if self._queue.empty():
+                    self._is_speaking = False
+                    self.tts_finished.emit()
             except queue.Empty:
                 continue
             except Exception as e:
                 logger.error("TTS Worker error: %s", e)
+                self._is_speaking = False
 
     def _process_text(self, text):
+        """Route text to the best available TTS engine."""
+        t0 = time.time()
+
+        # Try Kokoro first (local, lowest latency)
+        if self._kokoro and self._engine in ("auto", "kokoro"):
+            success = self._process_with_kokoro(text)
+            if success:
+                self._last_latency_ms = (time.time() - t0) * 1000
+                self._engine_used = "kokoro"
+                logger.info("TTS latency: %.0fms (kokoro)", self._last_latency_ms)
+                return
+
+        # Fall back to edge-tts
+        success = self._process_with_edge(text)
+        self._last_latency_ms = (time.time() - t0) * 1000
+        self._engine_used = "edge"
+        logger.info("TTS latency: %.0fms (edge-tts)", self._last_latency_ms)
+
+    def _process_with_kokoro(self, text: str) -> bool:
+        """Synthesize using Kokoro (local GPU) and emit file path."""
+        # Truncate long text
+        if len(text) > 500:
+            text = text[:500]
+
+        filename = f"tts_{int(time.time() * 1000)}.wav"
+        output_file = os.path.abspath(os.path.join(self._temp_dir, filename))
+
+        success = self._kokoro.synthesize_to_wav(text, output_file)
+        if success and os.path.exists(output_file):
+            self.audio_generated.emit(output_file)
+            return True
+        return False
+
+    def _process_with_edge(self, text: str) -> bool:
+        """Synthesize using edge-tts (cloud) and emit file path."""
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._speak_async(text))
-            loop.close()
+            future = asyncio.run_coroutine_threadsafe(
+                self._speak_async(text), self._edge_loop
+            )
+            future.result(timeout=15)  # Wait up to 15s for cloud TTS
+            return True
         except Exception as e:
-            logger.error("TTS Processing error: %s", e)
+            logger.error("Edge TTS processing error: %s", e)
+            return False
 
     async def _speak_async(self, text):
         # Truncate long responses for TTS (speak only reasonable chunks)

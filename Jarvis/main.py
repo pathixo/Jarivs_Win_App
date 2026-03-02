@@ -42,6 +42,7 @@ from Jarvis.core import colors as clr
 from Jarvis.core.terminal_bridge import get_terminal_bridge
 from Jarvis.output.tts import TTS
 from Jarvis.input.listener import Listener
+from Jarvis.core.pipeline import StreamingPipeline
 
 
 class Worker(QObject):
@@ -75,6 +76,35 @@ def main():
         listener = Listener()
 
         orchestrator = Orchestrator(worker=worker, tts=tts, listener=listener)
+
+        # StreamingPipeline for overlapping STT→LLM→TTS
+        pipeline = StreamingPipeline(brain=orchestrator.brain, tts=tts)
+
+        # ── Barge-in System ─────────────────────────────────────────────
+        # When user starts speaking while TTS is playing, cancel everything
+        def on_barge_in():
+            """Handle barge-in: stop TTS, cancel pipeline, re-enter listen mode."""
+            pipeline.cancel()
+            tts.stop()
+            window.stop_audio()   # Stop QMediaPlayer
+            listener.set_processing(False)
+            clr.print_info("  [Barge-in] User interrupted — listening")
+
+        if hasattr(listener, 'barge_in_detected'):
+            listener.barge_in_detected.connect(on_barge_in, Qt.ConnectionType.QueuedConnection)
+
+        # ── TTS ↔ Listener coordination ─────────────────────────────────
+        # Tell listener when TTS is playing (for barge-in detection)
+        if hasattr(tts, 'tts_started'):
+            tts.tts_started.connect(
+                lambda: listener.set_tts_playing(True) if hasattr(listener, 'set_tts_playing') else None,
+                Qt.ConnectionType.QueuedConnection,
+            )
+        if hasattr(tts, 'tts_finished'):
+            tts.tts_finished.connect(
+                lambda: listener.set_tts_playing(False) if hasattr(listener, 'set_tts_playing') else None,
+                Qt.ConnectionType.QueuedConnection,
+            )
 
         # ─── Terminal Bridge Connection ─────────────────────────────────
         terminal_bridge = get_terminal_bridge()

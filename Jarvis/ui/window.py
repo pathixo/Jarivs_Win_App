@@ -481,6 +481,15 @@ class MainWindow(QMainWindow):
             self.state_text.setText("Standing by...")
             self.orb.set_state("idle")
 
+    def stop_audio(self):
+        """Stop current playback and clear the audio queue (barge-in)."""
+        self._audio_queue.clear()
+        self._is_playing_audio = False
+        try:
+            self.player.stop()
+        except Exception:
+            pass
+
     def play_audio(self, file_path: str):
         """Add TTS audio file to the playback queue."""
         if not file_path or not os.path.exists(file_path):

@@ -8,7 +8,7 @@ Provides a unified interface to multiple LLM backends:
   - Grok    (xAI Cloud)
 
 Supports conversation memory, chain-of-thought reasoning, retry logic,
-provider failover, and structured settings management.
+provider failover, latency-aware routing, and structured settings management.
 """
 
 import logging
@@ -23,7 +23,7 @@ from typing import Optional
 from Jarvis.core.personas import PersonaManager
 from Jarvis.core.context import ContextManager
 
-import requests
+import httpx
 
 from Jarvis.config import (
     OLLAMA_URL,
@@ -40,6 +40,7 @@ from Jarvis.config import (
     GROK_MODEL,
     LLM_PROVIDER,
     DEFAULT_PERSONA,
+    RESPONSE_STYLE,
 )
 
 logger = logging.getLogger("jarvis.brain")
@@ -61,6 +62,14 @@ DEFAULT_SYSTEM_PROMPT = (
     "*Example*: 'I'm on it, sir. [SHELL]Get-Process[/SHELL]'\n\n"
     "## Execution Protocol\n"
     "You EXECUTE tasks — never just describe them. If you can act, ACT. If you can't, say so in one sentence and offer a brief alternative.\n\n"
+    "## Voice-Optimized Response Rules (CRITICAL)\n"
+    "Your responses will be spoken aloud via TTS. Follow these rules strictly:\n"
+    "1. Keep responses under 2 sentences for simple questions.\n"
+    "2. Never use markdown formatting (no **, ##, ```, bullet points). Write plain conversational English.\n"
+    "3. Never enumerate lists with numbers or bullets — speak naturally.\n"
+    "4. Avoid technical jargon unless specifically asked.\n"
+    "5. Use contractions (I'm, don't, can't) — sound human, not robotic.\n"
+    "6. Respond like a real assistant speaking to someone — concise, warm, direct.\n\n"
     "## Response Templates (STRICT ADHERENCE REQUIRED)\n"
     "1. **Action Mode** (for all tasks): Immediate conversational confirmation FIRST, then the tag.\n"
     "   *Example*: 'Opening Chrome, sir. [ACTION]launch_app: chrome[/ACTION]'\n"
@@ -143,10 +152,29 @@ class ConversationMemory:
         return len(self._messages)
 
 
+# ──────────────────────── Shared HTTP Client ───────────────────────────────
+
+# Persistent HTTP clients with connection pooling (reused across all backends)
+_http_clients: dict[str, httpx.Client] = {}
+_http_lock = threading.Lock()
+
+def _get_http_client(base_url: str = "", timeout: float = 60.0) -> httpx.Client:
+    """Get or create a persistent httpx client with connection pooling."""
+    key = base_url or "default"
+    with _http_lock:
+        if key not in _http_clients:
+            _http_clients[key] = httpx.Client(
+                timeout=httpx.Timeout(timeout, connect=10.0),
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+                follow_redirects=True,
+            )
+    return _http_clients[key]
+
+
 # ──────────────────────── Provider Backends ─────────────────────────────────
 
 class _OllamaBackend:
-    """Ollama local LLM via REST API."""
+    """Ollama local LLM via REST API (httpx with connection pooling)."""
 
     def __init__(self, base_url: str):
         self._url = base_url.rstrip("/")
@@ -170,7 +198,8 @@ class _OllamaBackend:
             },
         }
 
-        resp = requests.post(self._chat_url, json=payload, timeout=settings.timeout)
+        client = _get_http_client(self._url, settings.timeout)
+        resp = client.post(self._chat_url, json=payload)
         resp.raise_for_status()
         return resp.json().get("message", {}).get("content", "")
 
@@ -192,27 +221,30 @@ class _OllamaBackend:
             },
         }
 
-        resp = requests.post(self._chat_url, json=payload, stream=True, timeout=settings.timeout)
-        resp.raise_for_status()
-        for line in resp.iter_lines():
-            if line:
-                data = json.loads(line)
-                token = data.get("message", {}).get("content", "")
-                if token:
-                    yield token
-                if data.get("done"):
-                    break
+        client = _get_http_client(self._url, settings.timeout)
+        with client.stream("POST", self._chat_url, json=payload) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if line:
+                    data = json.loads(line)
+                    token = data.get("message", {}).get("content", "")
+                    if token:
+                        yield token
+                    if data.get("done"):
+                        break
 
     def health_check(self) -> bool:
         try:
-            r = requests.get("http://localhost:11434/api/tags", timeout=5)
+            client = _get_http_client(self._url, 5.0)
+            r = client.get(f"{self._url}/api/tags")
             return r.status_code == 200
         except Exception:
             return False
 
     def list_models(self) -> tuple[bool, list[str] | str]:
         try:
-            r = requests.get("http://localhost:11434/api/tags", timeout=5)
+            client = _get_http_client(self._url, 5.0)
+            r = client.get(f"{self._url}/api/tags")
             r.raise_for_status()
             models = r.json().get("models", [])
             names = [m.get("name") for m in models if m.get("name")]
@@ -222,7 +254,7 @@ class _OllamaBackend:
 
 
 class _GeminiBackend:
-    """Google Gemini via REST API (no SDK dependency)."""
+    """Google Gemini via REST API (httpx with connection pooling)."""
 
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -236,10 +268,7 @@ class _GeminiBackend:
         model = settings.model if settings.provider == "gemini" else GEMINI_MODEL
         url = f"{self.BASE_URL}/{model}:generateContent?key={self._api_key}"
 
-        # Build messages
         contents = []
-
-        # Add system instruction as first user/model exchange
         contents.append({
             "role": "user",
             "parts": [{"text": f"[SYSTEM INSTRUCTION]\n{settings.system_prompt}"}]
@@ -248,13 +277,9 @@ class _GeminiBackend:
             "role": "model",
             "parts": [{"text": "Understood. I am Jarvis, ready to assist."}]
         })
-
-        # Add conversation history
         for msg in history[-8:]:
             role = "user" if msg["role"] == "user" else "model"
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-
-        # Add current prompt
         contents.append({"role": "user", "parts": [{"text": prompt}]})
 
         payload = {
@@ -266,14 +291,14 @@ class _GeminiBackend:
             },
         }
 
-        resp = requests.post(url, json=payload, timeout=settings.timeout)
+        client = _get_http_client("gemini", settings.timeout)
+        resp = client.post(url, json=payload)
 
-        # Handle rate limiting with retry-after
         if resp.status_code == 429:
             retry_after = int(resp.headers.get("Retry-After", 5))
             logger.warning("Gemini rate limited, waiting %ds...", retry_after)
-            time.sleep(min(retry_after, 10))  # Wait up to 10s
-            resp = requests.post(url, json=payload, timeout=settings.timeout)
+            time.sleep(min(retry_after, 10))
+            resp = client.post(url, json=payload)
 
         resp.raise_for_status()
 
@@ -317,35 +342,36 @@ class _GeminiBackend:
             },
         }
 
-        resp = requests.post(url, json=payload, stream=True, timeout=settings.timeout)
-        resp.raise_for_status()
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            line = line.decode() if isinstance(line, bytes) else line
-            if line.startswith("data: "):
-                chunk = line[6:].strip()
-                if chunk == "[DONE]":
-                    break
-                try:
-                    data = json.loads(chunk)
-                    parts = (
-                        data.get("candidates", [{}])[0]
-                        .get("content", {})
-                        .get("parts", [])
-                    )
-                    text = parts[0].get("text", "") if parts else ""
-                    if text:
-                        yield text
-                except (json.JSONDecodeError, IndexError, KeyError):
+        client = _get_http_client("gemini", settings.timeout)
+        with client.stream("POST", url, json=payload) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line:
                     continue
+                if line.startswith("data: "):
+                    chunk = line[6:].strip()
+                    if chunk == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(chunk)
+                        parts = (
+                            data.get("candidates", [{}])[0]
+                            .get("content", {})
+                            .get("parts", [])
+                        )
+                        text = parts[0].get("text", "") if parts else ""
+                        if text:
+                            yield text
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        continue
 
     def health_check(self) -> bool:
         if not self._api_key:
             return False
         try:
             url = f"{self.BASE_URL}?key={self._api_key}"
-            r = requests.get(url, timeout=10)
+            client = _get_http_client("gemini", 10.0)
+            r = client.get(url)
             return r.status_code == 200
         except Exception:
             return False
@@ -355,7 +381,7 @@ class _GeminiBackend:
             return False, "Gemini API key not configured."
         try:
             url = f"{self.BASE_URL}?key={self._api_key}"
-            r = requests.get(url, timeout=10)
+            client = _get_http_client("gemini", 10.0)
             r.raise_for_status()
             models = r.json().get("models", [])
             names = [m.get("name", "").replace("models/", "") for m in models]
@@ -365,24 +391,25 @@ class _GeminiBackend:
 
 
 class _GroqBackend:
-    """Groq Cloud via OpenAI-compatible REST API (fast inference)."""
+    """Groq Cloud via OpenAI-compatible REST API (httpx with connection pooling)."""
 
     BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 
     def __init__(self, api_key: str):
         self._api_key = api_key
+        self._headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
 
     def generate(self, settings: BrainSettings, prompt: str, history: list[dict]) -> str:
         if not self._api_key:
             raise ValueError("Groq API key not configured. Set GROQ_API_KEY in .env")
 
         model = settings.model if settings.provider == "groq" else GROQ_MODEL
-
         messages = [{"role": "system", "content": settings.system_prompt}]
-
         for msg in history[-8:]:
             messages.append({"role": msg["role"], "content": msg["content"]})
-
         messages.append({"role": "user", "content": prompt})
 
         payload = {
@@ -393,12 +420,8 @@ class _GroqBackend:
             "max_tokens": settings.max_tokens,
         }
 
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-
-        resp = requests.post(self.BASE_URL, json=payload, headers=headers, timeout=settings.timeout)
+        client = _get_http_client("groq", settings.timeout)
+        resp = client.post(self.BASE_URL, json=payload, headers=self._headers)
         resp.raise_for_status()
 
         data = resp.json()
@@ -427,38 +450,31 @@ class _GroqBackend:
             "max_tokens": settings.max_tokens,
             "stream": True,
         }
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
 
-        resp = requests.post(
-            self.BASE_URL, json=payload, headers=headers,
-            stream=True, timeout=settings.timeout,
-        )
-        resp.raise_for_status()
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            line = line.decode() if isinstance(line, bytes) else line
-            if line.startswith("data: "):
-                chunk = line[6:].strip()
-                if chunk == "[DONE]":
-                    break
-                try:
-                    data = json.loads(chunk)
-                    delta = data["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        yield delta
-                except (json.JSONDecodeError, IndexError, KeyError):
+        client = _get_http_client("groq", settings.timeout)
+        with client.stream("POST", self.BASE_URL, json=payload, headers=self._headers) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line:
                     continue
+                if line.startswith("data: "):
+                    chunk = line[6:].strip()
+                    if chunk == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(chunk)
+                        delta = data["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            yield delta
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        continue
 
     def health_check(self) -> bool:
         if not self._api_key:
             return False
         try:
-            headers = {"Authorization": f"Bearer {self._api_key}"}
-            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+            client = _get_http_client("groq", 10.0)
+            r = client.get("https://api.groq.com/openai/v1/models", headers=self._headers)
             return r.status_code == 200
         except Exception:
             return False
@@ -467,8 +483,8 @@ class _GroqBackend:
         if not self._api_key:
             return False, "Groq API key not configured."
         try:
-            headers = {"Authorization": f"Bearer {self._api_key}"}
-            r = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+            client = _get_http_client("groq", 10.0)
+            r = client.get("https://api.groq.com/openai/v1/models", headers=self._headers)
             r.raise_for_status()
             models = r.json().get("data", [])
             names = [m.get("id", "") for m in models]
@@ -478,24 +494,25 @@ class _GroqBackend:
 
 
 class _GrokBackend:
-    """xAI Grok via OpenAI-compatible REST API."""
+    """xAI Grok via OpenAI-compatible REST API (httpx with connection pooling)."""
 
     BASE_URL = "https://api.x.ai/v1/chat/completions"
 
     def __init__(self, api_key: str):
         self._api_key = api_key
+        self._headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
 
     def generate(self, settings: BrainSettings, prompt: str, history: list[dict]) -> str:
         if not self._api_key:
             raise ValueError("Grok API key not configured. Set GROK_API_KEY in .env")
 
         model = settings.model if settings.provider == "grok" else GROK_MODEL
-
         messages = [{"role": "system", "content": settings.system_prompt}]
-
         for msg in history[-8:]:
             messages.append({"role": msg["role"], "content": msg["content"]})
-
         messages.append({"role": "user", "content": prompt})
 
         payload = {
@@ -506,12 +523,8 @@ class _GrokBackend:
             "max_tokens": settings.max_tokens,
         }
 
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-
-        resp = requests.post(self.BASE_URL, json=payload, headers=headers, timeout=settings.timeout)
+        client = _get_http_client("grok", settings.timeout)
+        resp = client.post(self.BASE_URL, json=payload, headers=self._headers)
         resp.raise_for_status()
 
         data = resp.json()
@@ -540,38 +553,31 @@ class _GrokBackend:
             "max_tokens": settings.max_tokens,
             "stream": True,
         }
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
 
-        resp = requests.post(
-            self.BASE_URL, json=payload, headers=headers,
-            stream=True, timeout=settings.timeout,
-        )
-        resp.raise_for_status()
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            line = line.decode() if isinstance(line, bytes) else line
-            if line.startswith("data: "):
-                chunk = line[6:].strip()
-                if chunk == "[DONE]":
-                    break
-                try:
-                    data = json.loads(chunk)
-                    delta = data["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        yield delta
-                except (json.JSONDecodeError, IndexError, KeyError):
+        client = _get_http_client("grok", settings.timeout)
+        with client.stream("POST", self.BASE_URL, json=payload, headers=self._headers) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line:
                     continue
+                if line.startswith("data: "):
+                    chunk = line[6:].strip()
+                    if chunk == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(chunk)
+                        delta = data["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            yield delta
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        continue
 
     def health_check(self) -> bool:
         if not self._api_key:
             return False
         try:
-            headers = {"Authorization": f"Bearer {self._api_key}"}
-            r = requests.get("https://api.x.ai/v1/models", headers=headers, timeout=10)
+            client = _get_http_client("grok", 10.0)
+            r = client.get("https://api.x.ai/v1/models", headers=self._headers)
             return r.status_code == 200
         except Exception:
             return False
@@ -580,8 +586,8 @@ class _GrokBackend:
         if not self._api_key:
             return False, "Grok API key not configured."
         try:
-            headers = {"Authorization": f"Bearer {self._api_key}"}
-            r = requests.get("https://api.x.ai/v1/models", headers=headers, timeout=10)
+            client = _get_http_client("grok", 10.0)
+            r = client.get("https://api.x.ai/v1/models", headers=self._headers)
             r.raise_for_status()
             models = r.json().get("data", [])
             names = [m.get("id", "") for m in models]
@@ -622,23 +628,39 @@ class Brain:
             Provider.GROK:   _GrokBackend(GROK_API_KEY),
         }
 
+        # Initialize ProviderRouter for intelligent provider selection
+        from Jarvis.core.provider_router import ProviderRouter
+        self.provider_router = ProviderRouter(self)
+
         logger.info(
             "Brain initialized | provider=%s | model=%s | persona=%s",
             self.settings.provider, self.settings.model, active_persona.name,
         )
         print(f"Brain initialized | provider={self.settings.provider} | model={self.settings.model} | persona={active_persona.name}")
 
-        # Warm up: Load default model in background to reduce first-query latency
-        if self.settings.provider == Provider.OLLAMA:
-            threading.Thread(target=self._warm_up, daemon=True).start()
+        # Warm up: Pre-load models and connections in background
+        threading.Thread(target=self._warm_up, daemon=True).start()
 
     def _warm_up(self):
-        """Pre-load the model into memory."""
+        """Pre-load models and establish connections for low first-query latency."""
         try:
-            logger.info("Warming up Ollama model: %s", self.settings.model)
-            # Send a minimal prompt just to trigger loading
-            self.generate_response("hi", history=[])
-            logger.info("Ollama model warmed up.")
+            # Warm up Ollama if it's the default provider
+            if self.settings.provider == Provider.OLLAMA:
+                logger.info("Warming up Ollama model: %s", self.settings.model)
+                try:
+                    self.generate_response("hi", history=[])
+                    logger.info("Ollama model warmed up.")
+                except Exception as e:
+                    logger.warning("Ollama warm-up failed: %s", e)
+
+            # Pre-warm cloud connections (establishes TCP+TLS)
+            for provider_name, backend in self._backends.items():
+                if provider_name != Provider.OLLAMA:
+                    try:
+                        backend.health_check()
+                        logger.info("Pre-warmed connection to %s", provider_name.value)
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning("Warm-up failed: %s", e)
 
@@ -661,6 +683,11 @@ class Brain:
         """
         Yield LLM tokens as they arrive (streaming).
 
+        Uses ProviderRouter for intelligent provider selection based on:
+          - Query complexity (simple→Groq, complex→Gemini, code→Ollama)
+          - Rate limit headroom
+          - Provider health
+
         Auto-selects the Ollama model based on query complexity when
         OLLAMA_AUTO_SELECT is enabled. Falls back to non-streaming if the
         backend does not implement generate_stream().
@@ -673,6 +700,22 @@ class Brain:
         conv_history = history if history is not None else self.memory.get_history()
         augmented_settings = self._get_augmented_settings()
 
+        # Use ProviderRouter for intelligent provider selection
+        selected_provider = self.provider_router.select_provider(
+            text.strip(), preferred=augmented_settings.provider
+        )
+        if selected_provider != augmented_settings.provider:
+            logger.info("ProviderRouter routed: %s → %s", augmented_settings.provider, selected_provider)
+            print(f"  [Router] {augmented_settings.provider} → {selected_provider}")
+            augmented_settings.provider = selected_provider
+            augmented_settings.model = self._default_model_for(selected_provider)
+
+        # Adaptive max_tokens based on query complexity
+        adaptive_tokens = self.provider_router.get_max_tokens_for_query(
+            text.strip(), augmented_settings.max_tokens
+        )
+        augmented_settings.max_tokens = adaptive_tokens
+
         # Auto-select Ollama model for this request only
         original_model = augmented_settings.model
         if OLLAMA_AUTO_SELECT and augmented_settings.provider == "ollama":
@@ -682,11 +725,20 @@ class Brain:
                 logger.info("Auto-selected model: %s (was: %s)", selected, original_model)
                 print(f"  [Auto-Select] Model: {selected}")
 
-        backend = self._get_backend()
+        # Use the selected provider's backend
+        provider_enum = Provider(augmented_settings.provider)
+        backend = self._backends[provider_enum]
         full_response = ""
+        t0 = time.time()
+        first_token_time = None
 
         try:
             for token in backend.generate_stream(augmented_settings, text.strip(), conv_history):
+                if first_token_time is None:
+                    first_token_time = time.time()
+                    ttft_ms = (first_token_time - t0) * 1000
+                    self.provider_router.record_success(augmented_settings.provider, ttft_ms=ttft_ms)
+                    logger.info("TTFT: %.0fms (%s)", ttft_ms, augmented_settings.provider)
                 full_response += token
                 yield token
         except AttributeError:
@@ -696,12 +748,47 @@ class Brain:
             full_response = response
             yield response
         except Exception as e:
-            logger.error("Streaming error: %s", e, exc_info=True)
-            yield f"Error: {e}"
+            logger.error("Streaming error (%s): %s", augmented_settings.provider, e, exc_info=True)
+            self.provider_router.record_error(augmented_settings.provider)
+            
+            # Try failover to another provider
+            fallback_response = self._try_stream_failover(text.strip(), conv_history, augmented_settings)
+            if fallback_response:
+                for token in fallback_response:
+                    full_response += token
+                    yield token
+            else:
+                yield f"Error: {e}"
 
         if full_response:
             self.memory.add("user", text.strip())
             self.memory.add("assistant", full_response)
+
+    def _try_stream_failover(self, text: str, history: list[dict], settings: 'BrainSettings'):
+        """Try streaming from another provider when the primary fails."""
+        current = Provider(settings.provider)
+        for provider in Provider:
+            if provider == current:
+                continue
+            backend = self._backends[provider]
+            try:
+                if not backend.health_check():
+                    continue
+                temp_settings = BrainSettings(
+                    provider=provider.value,
+                    model=self._default_model_for(provider.value),
+                    temperature=settings.temperature,
+                    top_p=settings.top_p,
+                    max_tokens=settings.max_tokens,
+                    timeout=settings.timeout,
+                    system_prompt=settings.system_prompt,
+                )
+                logger.info("Stream failover → %s", provider.value)
+                return backend.generate_stream(temp_settings, text, history)
+            except Exception as e:
+                logger.warning("Stream failover to %s failed: %s", provider.value, e)
+                continue
+        return None
 
     def generate_response(self, text: str, history: list[dict] | None = None) -> str:
         """
@@ -715,7 +802,17 @@ class Brain:
         conv_history = history if history is not None else self.memory.get_history()
         augmented_settings = self._get_augmented_settings()
 
-        backend = self._get_backend()
+        # Use ProviderRouter for intelligent provider selection
+        selected_provider = self.provider_router.select_provider(
+            text.strip(), preferred=augmented_settings.provider
+        )
+        if selected_provider != augmented_settings.provider:
+            logger.info("ProviderRouter routed: %s → %s", augmented_settings.provider, selected_provider)
+            augmented_settings.provider = selected_provider
+            augmented_settings.model = self._default_model_for(selected_provider)
+
+        provider_enum = Provider(augmented_settings.provider)
+        backend = self._backends[provider_enum]
         response = ""
 
         for attempt in range(1, self.MAX_RETRIES + 1):
@@ -723,6 +820,7 @@ class Brain:
                 t0 = time.time()
                 response = backend.generate(augmented_settings, text.strip(), conv_history)
                 elapsed = time.time() - t0
+                self.provider_router.record_success(augmented_settings.provider, ttft_ms=elapsed * 1000)
 
                 logger.info(
                     "LLM response | provider=%s | model=%s | time=%.2fs | len=%d",
@@ -735,8 +833,9 @@ class Brain:
 
                 return response
 
-            except requests.exceptions.ConnectionError:
+            except httpx.ConnectError:
                 logger.warning("Connection failed (attempt %d/%d)", attempt, self.MAX_RETRIES)
+                self.provider_router.record_error(augmented_settings.provider)
                 if attempt < self.MAX_RETRIES:
                     time.sleep(self.RETRY_DELAY * attempt)  # exponential-ish backoff
                     continue
@@ -746,14 +845,15 @@ class Brain:
                     return fallback
                 return f"Error: Could not connect to {augmented_settings.provider} LLM. Is it running?"
 
-            except requests.exceptions.Timeout:
+            except httpx.TimeoutException:
                 logger.warning("Request timed out (attempt %d/%d)", attempt, self.MAX_RETRIES)
+                self.provider_router.record_error(augmented_settings.provider)
                 if attempt < self.MAX_RETRIES:
                     time.sleep(self.RETRY_DELAY)
                     continue
                 return f"Error: {augmented_settings.provider} LLM timed out after {augmented_settings.timeout}s."
 
-            except requests.exceptions.HTTPError as e:
+            except httpx.HTTPStatusError as e:
                 status = e.response.status_code if e.response is not None else 0
                 logger.error("HTTP error %d: %s", status, e)
 

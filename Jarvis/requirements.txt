@@ -1,11 +1,15 @@
 PyQt6
 PyQt6-WebEngine
 requests
+httpx[http2]
 faster-whisper
 edge-tts
+kokoro-onnx
+onnxruntime
 sounddevice
 numpy
 python-dotenv
 colorama
 pyaudio
 psutil>=5.9.0
+silero-vad

@@ -67,6 +67,41 @@ TTS_VOICE = "en-GB-SoniaNeural"
 # Default Persona
 DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", "jarvis")
 
+# ─────────────────────── Pipeline Config ────────────────────────────────────
+# STT Provider: "auto" | "groq" | "local"
+#   auto  — Groq Whisper API (fastest, most accurate) with local fallback
+#   groq  — Always use Groq Whisper API
+#   local — Always use local faster-whisper
+STT_PROVIDER = os.getenv("STT_PROVIDER", "auto")
+
+# TTS Engine: "auto" | "kokoro" | "edge"
+#   auto   — Kokoro (local GPU) with edge-tts fallback
+#   kokoro — Always use Kokoro ONNX (local, lowest latency)
+#   edge   — Always use edge-tts (cloud, Microsoft Edge voices)
+TTS_ENGINE = os.getenv("TTS_ENGINE", "auto")
+
+# Pipeline Mode: "streaming" | "sequential"
+#   streaming   — Overlapping STT→LLM→TTS pipeline (low latency)
+#   sequential  — Classic sequential processing
+PIPELINE_MODE = os.getenv("PIPELINE_MODE", "streaming")
+
+# Barge-In: Allow user to interrupt Jarvis mid-speech
+BARGE_IN_ENABLED = os.getenv("BARGE_IN_ENABLED", "true").lower() == "true"
+
+# VAD Engine: "silero" | "energy"
+#   silero — Neural VAD (accurate, ~1ms per chunk)
+#   energy — RMS energy threshold (legacy)
+VAD_ENGINE = os.getenv("VAD_ENGINE", "silero")
+
+# Response Style: "concise" | "detailed"
+#   concise  — Short replies, optimized for voice
+#   detailed — Longer replies for complex queries
+RESPONSE_STYLE = os.getenv("RESPONSE_STYLE", "concise")
+
+# Kokoro TTS Model paths (auto-downloaded on first use)
+KOKORO_MODEL_PATH = os.getenv("KOKORO_MODEL_PATH", "")
+KOKORO_VOICES_PATH = os.getenv("KOKORO_VOICES_PATH", "")
+
 # ─────────────────────── Paths ──────────────────────────────────────────────
 BASE_DIR = get_base_path()
 DATA_DIR = get_app_data_path()
