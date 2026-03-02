@@ -295,6 +295,12 @@ class Listener(QObject):
             frames.append(data)
             elapsed = time.time() - start_time
 
+            # Process audio for visualization (non-blocking)
+            try:
+                self.audio_processor.process_chunk(data)
+            except Exception:
+                pass
+
             if elapsed > self.MAX_DURATION:
                 break
 

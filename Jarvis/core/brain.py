@@ -149,13 +149,19 @@ class _OllamaBackend:
     """Ollama local LLM via REST API."""
 
     def __init__(self, base_url: str):
-        self._url = base_url
+        self._url = base_url.rstrip("/")
+        self._generate_url = f"{self._url}/api/generate"
+        self._chat_url = f"{self._url}/api/chat"
 
     def generate(self, settings: BrainSettings, prompt: str, history: list[dict]) -> str:
+        messages = [{"role": "system", "content": settings.system_prompt}]
+        for msg in history[-8:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": prompt})
+
         payload = {
             "model": settings.model,
-            "prompt": prompt,
-            "system": settings.system_prompt,
+            "messages": messages,
             "stream": False,
             "options": {
                 "temperature": settings.temperature,
@@ -163,23 +169,21 @@ class _OllamaBackend:
                 "num_predict": settings.max_tokens,
             },
         }
-        # If we have history, add context via concatenation (Ollama /api/generate)
-        if history:
-            context_str = "\n".join(
-                f"{m['role'].capitalize()}: {m['content']}" for m in history[-6:]
-            )
-            payload["prompt"] = f"Previous conversation:\n{context_str}\n\nUser: {prompt}"
 
-        resp = requests.post(self._url, json=payload, timeout=settings.timeout)
+        resp = requests.post(self._chat_url, json=payload, timeout=settings.timeout)
         resp.raise_for_status()
-        return resp.json().get("response", "")
+        return resp.json().get("message", {}).get("content", "")
 
     def generate_stream(self, settings: BrainSettings, prompt: str, history: list[dict]):
-        """Yield response tokens from Ollama's streaming API."""
+        """Yield response tokens from Ollama's chat API."""
+        messages = [{"role": "system", "content": settings.system_prompt}]
+        for msg in history[-8:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": prompt})
+
         payload = {
             "model": settings.model,
-            "prompt": prompt,
-            "system": settings.system_prompt,
+            "messages": messages,
             "stream": True,
             "options": {
                 "temperature": settings.temperature,
@@ -187,18 +191,13 @@ class _OllamaBackend:
                 "num_predict": settings.max_tokens,
             },
         }
-        if history:
-            context_str = "\n".join(
-                f"{m['role'].capitalize()}: {m['content']}" for m in history[-6:]
-            )
-            payload["prompt"] = f"Previous conversation:\n{context_str}\n\nUser: {prompt}"
 
-        resp = requests.post(self._url, json=payload, stream=True, timeout=settings.timeout)
+        resp = requests.post(self._chat_url, json=payload, stream=True, timeout=settings.timeout)
         resp.raise_for_status()
         for line in resp.iter_lines():
             if line:
                 data = json.loads(line)
-                token = data.get("response", "")
+                token = data.get("message", {}).get("content", "")
                 if token:
                     yield token
                 if data.get("done"):

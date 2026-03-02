@@ -54,6 +54,9 @@ class VoiceWave(QWidget):
         self._heights = [0.0] * self.NUM_BARS
         self._targets = [0.0] * self.NUM_BARS
 
+        # External audio data (if provided)
+        self._external_spectrum = None
+
         # Glow pulse
         self._glow_pulse = 0.0
         self._glow_dir = 1
@@ -68,6 +71,15 @@ class VoiceWave(QWidget):
         """Switch visual state. Called from the main thread."""
         valid = ("waiting", "listening", "processing", "speaking")
         self.state = state_name if state_name in valid else "waiting"
+
+    def set_spectrum(self, spectrum):
+        """
+        Pass real-time frequency data to the visualizer.
+        
+        Args:
+            spectrum: np.ndarray of 32 normalized (0.0-1.0) values
+        """
+        self._external_spectrum = spectrum
 
     # ── Animation ────────────────────────────────────────────────────────
 
@@ -112,12 +124,25 @@ class VoiceWave(QWidget):
                 self._targets[i] = 0.12 + 0.12 * math.sin(t)
 
         elif self.state == "listening":
-            # Multi-harmonic active wave — simulates mic input
-            for i in range(n):
-                t = self._phase + (i / n) * math.pi * 2
-                base = 0.3 * math.sin(t) + 0.2 * math.sin(t * 2 + 0.5)
-                noise = 0.15 * math.sin(t * 5 + self._tick_count * 0.1)
-                self._targets[i] = max(0.05, 0.5 + base + noise)
+            # REAL audio input if available, else fallback to simulated
+            if self._external_spectrum is not None:
+                # Use provided frequency bands directly
+                for i in range(n):
+                    # We have 32 bands, so map 1:1 if possible
+                    # _external_spectrum length should match self.NUM_BARS
+                    if i < len(self._external_spectrum):
+                        # Add a tiny bit of sine floor to keep it 'alive' when quiet
+                        floor = 0.05 + 0.03 * math.sin(self._phase + i/2)
+                        self._targets[i] = max(floor, self._external_spectrum[i])
+                    else:
+                        self._targets[i] = 0.05
+            else:
+                # Fallback multi-harmonic active wave — simulates mic input
+                for i in range(n):
+                    t = self._phase + (i / n) * math.pi * 2
+                    base = 0.3 * math.sin(t) + 0.2 * math.sin(t * 2 + 0.5)
+                    noise = 0.15 * math.sin(t * 5 + self._tick_count * 0.1)
+                    self._targets[i] = max(0.05, 0.5 + base + noise)
 
         elif self.state == "processing":
             # Fast choppy / glitchy wave

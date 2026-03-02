@@ -4,6 +4,9 @@ import threading
 import logging
 import traceback
 
+# Silence FFmpeg / QtMultimedia logs via env vars (must be before any Qt/Multimedia imports)
+os.environ["QT_LOGGING_RULES"] = "qt.multimedia.ffmpeg.debug=false;qt.multimedia.ffmpeg.warning=false"
+
 # Add parent directory to sys.path FIRST (before any Jarvis imports)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -29,7 +32,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 sys.excepthook = handle_exception
 
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QObject, pyqtSignal, Qt
+from PyQt6.QtCore import QObject, pyqtSignal, Qt, QTimer
 from PyQt6.QtMultimedia import QMediaPlayer
 from Jarvis.ui.window import MainWindow
 from Jarvis.ui.tray import JarvisTrayIcon
@@ -179,6 +182,16 @@ def main():
         
         # Connect UI request to window
         worker.confirm_request.connect(window.show_confirmation_dialog)
+
+        # Wave Visualizer Polling
+        def update_wave():
+            spectrum = listener.get_audio_spectrum_from_queue()
+            if spectrum is not None:
+                window.orb.set_spectrum(spectrum)
+
+        window.wave_timer = QTimer()
+        window.wave_timer.timeout.connect(update_wave)
+        window.wave_timer.start(30)  # ~33 FPS for UI updates
 
         sys.exit(app.exec())
 

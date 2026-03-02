@@ -253,6 +253,21 @@ class MainWindow(QMainWindow):
         self.audio_output = QAudioOutput()
         self.player.setAudioOutput(self.audio_output)
         self.audio_output.setVolume(1.0)
+        
+        # Connect signals for queue management
+        self.player.playbackStateChanged.connect(self._on_playback_state_changed)
+        self.player.mediaStatusChanged.connect(self._on_media_status_changed)
+        self.player.errorOccurred.connect(self._on_player_error)
+        
+        # Audio playback queue
+        self._audio_queue = []
+        self._is_playing_audio = False
+
+        # Silence FFmpeg / QtMultimedia logs via env vars (must be before first QtMultimedia call)
+        # This is already set in main.py, but keeping it here for safety as well.
+        import os
+        if "QT_LOGGING_RULES" not in os.environ:
+            os.environ["QT_LOGGING_RULES"] = "qt.multimedia.ffmpeg.debug=false;qt.multimedia.ffmpeg.warning=false"
 
         # Command history
         self._cmd_history = []
@@ -465,14 +480,59 @@ class MainWindow(QMainWindow):
             self.state_text.setText("Standing by...")
             self.orb.set_state("idle")
 
-    def play_audio(self, file_path):
-        """Play TTS audio file."""
+    def play_audio(self, file_path: str):
+        """Add TTS audio file to the playback queue."""
+        if not file_path or not os.path.exists(file_path):
+            return
+            
+        self._audio_queue.append(file_path)
+        
+        # Start playing if idle
+        if not self._is_playing_audio:
+            self._play_next_in_queue()
+
+    def _play_next_in_queue(self):
+        """Play the next audio file in the queue."""
+        if not self._audio_queue:
+            self._is_playing_audio = False
+            return
+
+        self._is_playing_audio = True
+        file_path = self._audio_queue.pop(0)
+        
         try:
             url = QUrl.fromLocalFile(file_path)
             self.player.setSource(url)
             self.player.play()
         except Exception as e:
             print(f"Audio Play Error: {e}")
+            self._play_next_in_queue()
+
+    def _on_playback_state_changed(self, state):
+        """Triggered when media player state changes (Stopped, Playing, Paused)."""
+        # We handle transitions back to StoppedState as triggers for the next file
+        if state == QMediaPlayer.PlaybackState.StoppedState:
+            # Short delay to ensure status is updated and we're not stuck in a race
+            QTimer.singleShot(50, self._check_queue_after_stop)
+
+    def _on_media_status_changed(self, status):
+        """Triggered when media status changes (EndOfMedia, LoadedMedia, etc)."""
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            # End of media reached, go to next
+            self._play_next_in_queue()
+
+    def _on_player_error(self, error, error_str):
+        """Triggered when a player error occurs."""
+        print(f"MediaPlayer Error ({error}): {error_str}")
+        self._play_next_in_queue()
+
+    def _check_queue_after_stop(self):
+        """Check if we stopped but still have items in the queue."""
+        # If stopped and not playing anything else, try the next one
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.StoppedState and self._audio_queue:
+            self._play_next_in_queue()
+        elif not self._audio_queue:
+            self._is_playing_audio = False
 
     def closeEvent(self, event):
         """Minimize to tray instead of quitting."""

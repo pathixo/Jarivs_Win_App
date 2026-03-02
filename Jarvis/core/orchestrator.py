@@ -322,9 +322,26 @@ class Orchestrator:
             )
 
         except Exception as e:
-            logger.error("Command processing failed: %s", e, exc_info=True)
-            clr.print_error(str(e))
-            return f"Error processing command: {e}"
+            return self._handle_processing_error(e)
+
+    def _handle_processing_error(self, e: Exception) -> str:
+        """Centralized error handling for command processing."""
+        err_str = str(e)
+        logger.error("Command processing failed: %s", err_str, exc_info=True)
+        
+        # Check for connection/technical errors
+        if any(msg in err_str for msg in [
+            "Max retries exceeded", "Failed to establish a new connection", 
+            "11434", "Connection refused", "Ollama", "http"
+        ]):
+            friendly_err = "I'm having trouble connecting to my brain, sir. Please check if Ollama is running."
+            clr.print_error(friendly_err)
+            self._speak_async(friendly_err)
+            return friendly_err
+            
+        # Generic fallback
+        clr.print_error(f"Error: {err_str}")
+        return f"I encountered an unexpected error, sir: {err_str}"
 
     # ── Intent Detection ────────────────────────────────────────────────────
 
@@ -595,8 +612,8 @@ class Orchestrator:
                                 self._speak_async(sentence)
                                 speech_buf = ""
             except Exception as e:
-                logger.error("LLM Stream error: %s", e)
                 _first_token_received.set() # Ensure filler thread doesn't trigger late
+                return self._handle_processing_error(e)
 
             remaining = stream_filter.flush()
             if remaining:
@@ -961,6 +978,7 @@ class Orchestrator:
             "  voice set <voice_id>  - Set TTS voice manually\n"
             "  voice list            - Show recommended voices\n"
             "  voice status          - Show current voice\n"
+            "  voice language <lang> - Set TTS language mode (auto/hindi/english)\n"
         )
 
         # voice help
@@ -989,7 +1007,26 @@ class Orchestrator:
         # voice status
         if re.search(r"^voice\s+status$", command_text, re.IGNORECASE):
             if self.tts:
-                return f"Current voice: {self.tts.get_voice()}"
+                return (
+                    f"Current voice: {self.tts.get_voice()}\n"
+                    f"Language mode: {self.tts._language_mode}"
+                )
+            return "TTS not available."
+
+        # voice language <lang>
+        lang_match = re.search(r"^voice\s+language\s+(.+)$", command_text, re.IGNORECASE)
+        if lang_match:
+            lang = lang_match.group(1).strip().lower()
+            if lang in ["hindi", "hi"]:
+                mode = "hi"
+            elif lang in ["english", "en"]:
+                mode = "en"
+            else:
+                mode = "auto"
+            
+            if self.tts:
+                self.tts.set_language_mode(mode)
+                return f"Voice language mode set to '{mode}'."
             return "TTS not available."
 
         return help_text
