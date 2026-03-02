@@ -35,16 +35,19 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal, Qt, QTimer
 from PyQt6.QtMultimedia import QMediaPlayer
 from Jarvis.ui.window import MainWindow
+from Jarvis.ui.terminal_window import TerminalWindow
 from Jarvis.ui.tray import JarvisTrayIcon
 from Jarvis.core.orchestrator import Orchestrator
 from Jarvis.core import colors as clr
+from Jarvis.core.terminal_bridge import get_terminal_bridge
 from Jarvis.output.tts import TTS
 from Jarvis.input.listener import Listener
 
 
 class Worker(QObject):
     """Thread-safe bridge for UI updates from background threads."""
-    output_ready  = pyqtSignal(str)
+    output_ready  = pyqtSignal(str)        # Jarvis/AI conversational output
+    cli_output_ready = pyqtSignal(str)    # Shell/Command/CLI output
     execute_ready = pyqtSignal(str, str)   # command, output
     stream_begin  = pyqtSignal()           # LLM stream starting
     stream_token  = pyqtSignal(str)        # individual streamed token
@@ -59,15 +62,51 @@ def main():
 
         worker = Worker()
 
+        # Create and show main GUI window
         window = MainWindow()
-        # Don't show immediately if we want silent start, but generally show on launch
         window.show()
+
+        # Create and show terminal window
+        terminal_window = TerminalWindow()
+        terminal_window.show()
 
         tts = TTS()
         # Listener (fully autonomous)
         listener = Listener()
 
         orchestrator = Orchestrator(worker=worker, tts=tts, listener=listener)
+
+        # ─── Terminal Bridge Connection ─────────────────────────────────
+        terminal_bridge = get_terminal_bridge()
+        
+        # Connect terminal bridge signals to terminal window
+        terminal_bridge.command_executed.connect(
+            terminal_window.append_command, 
+            Qt.ConnectionType.QueuedConnection
+        )
+        terminal_bridge.output_ready.connect(
+            lambda cmd, output, is_err: terminal_window.append_output(output, is_err),
+            Qt.ConnectionType.QueuedConnection
+        )
+        terminal_bridge.status_update.connect(
+            terminal_window.update_status,
+            Qt.ConnectionType.QueuedConnection
+        )
+        
+        # Update terminal status based on listener state
+        def on_listener_state(state):
+            state_map = {
+                "initialized": ("Initializing...", "processing"),
+                "listening": ("● Ready", "listening"),
+                "recording": ("🔴 Recording", "processing"),
+                "processing": ("⟳ Processing", "processing"),
+                "paused": ("⏸ Paused", "normal"),
+                "error": ("✗ Error", "error"),
+            }
+            status_text, status_type = state_map.get(state, (f"State: {state}", "normal"))
+            terminal_bridge.status_update.emit(status_text, status_type)
+        
+        listener.state_changed.connect(on_listener_state, Qt.ConnectionType.QueuedConnection)
 
         # System Tray
         tray = JarvisTrayIcon()
@@ -88,6 +127,7 @@ def main():
 
         # Thread-safe UI connections
         worker.output_ready.connect(window.append_terminal_output, Qt.ConnectionType.QueuedConnection)
+        worker.cli_output_ready.connect(window.append_to_terminal, Qt.ConnectionType.QueuedConnection)
         worker.stream_begin.connect(window.on_stream_begin, Qt.ConnectionType.QueuedConnection)
         worker.stream_token.connect(window.on_stream_chunk, Qt.ConnectionType.QueuedConnection)
         worker.stream_end.connect(window.on_stream_end, Qt.ConnectionType.QueuedConnection)
@@ -135,9 +175,11 @@ def main():
                         # We don't call tts.speak(response) here to avoid double-speech.
                     else:
                         # Non-streamed response (meta-commands etc.) — show in UI AND speak
-                        worker.output_ready.emit(f"Response: {response}")
-                        if response and not response.startswith("Error"):
-                            tts.speak(response)
+                        # We only emit if it hasn't been emitted by orchestrator internals
+                        if response and not response.startswith("Command executed") and "Result of `" not in response:
+                            worker.output_ready.emit(f"Response: {response}")
+                            if not response.startswith("Error"):
+                                tts.speak(response)
 
                     clr.print_debug(f"  Total: {_t.time()-t0:.2f}s")
                     print(clr.divider())

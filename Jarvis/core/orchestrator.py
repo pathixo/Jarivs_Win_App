@@ -32,6 +32,7 @@ from Jarvis.core.system import (
     get_backend, ActionRouter, extract_actions, RiskLevel,
     ActionRequest, ActionType, ACTION_TAG_PATTERN, SHELL_TAG_PATTERN
 )
+from Jarvis.core.terminal_bridge import get_terminal_bridge
 
 logger = logging.getLogger("jarvis.orchestrator")
 
@@ -324,7 +325,7 @@ class Orchestrator:
         except Exception as e:
             return self._handle_processing_error(e)
 
-    def _handle_processing_error(self, e: Exception) -> str:
+    def _handle_processing_error(self, e: Exception, also_speak: bool = False) -> str:
         """Centralized error handling for command processing."""
         err_str = str(e)
         logger.error("Command processing failed: %s", err_str, exc_info=True)
@@ -336,12 +337,13 @@ class Orchestrator:
         ]):
             friendly_err = "I'm having trouble connecting to my brain, sir. Please check if Ollama is running."
             clr.print_error(friendly_err)
-            self._speak_async(friendly_err)
+            if also_speak:
+                self._speak_async(friendly_err)
             return friendly_err
             
-        # Generic fallback
+        # Generic fallback - prefix with Error: to prevent main loop from speaking it
         clr.print_error(f"Error: {err_str}")
-        return f"I encountered an unexpected error, sir: {err_str}"
+        return f"Error: I encountered an unexpected failure, sir. {err_str}"
 
     # ── Intent Detection ────────────────────────────────────────────────────
 
@@ -613,7 +615,7 @@ class Orchestrator:
                                 speech_buf = ""
             except Exception as e:
                 _first_token_received.set() # Ensure filler thread doesn't trigger late
-                return self._handle_processing_error(e)
+                return self._handle_processing_error(e, also_speak=True)
 
             remaining = stream_filter.flush()
             if remaining:
@@ -723,6 +725,9 @@ class Orchestrator:
             command: The shell command to run.
             from_llm: If True, this command came from LLM output (extra safety).
         """
+        # Get terminal bridge for real-time display
+        terminal_bridge = get_terminal_bridge()
+        
         # Blanket confirmation mode (asks even for safe commands)
         if self.confirmation_mode:
             if not self._request_confirmation(command):
@@ -735,22 +740,33 @@ class Orchestrator:
             logger.info("Routing command to WSL: %s", command)
             command = f"wsl -- {command}"
 
+        # Emit command to terminal window
+        terminal_bridge.on_command_started(command)
+        
         # Execute via ActionRouter (which delegates to SystemBackend)
         result = self.action_router.execute_shell(command, from_llm=from_llm)
 
         # Format output for display — use message for blocked/denied commands
         if not result.success:
             final_out = result.message
+            is_error = True
         else:
             final_out = str(result)
+            is_error = False
 
         if result.success and final_out == "Command executed.":
             clr.print_info("Command executed.")
         elif final_out:
             clr.print_shell_output(final_out)
 
+        # Emit output to terminal window
+        terminal_bridge.on_command_completed(command, final_out, is_error=is_error)
+
         if self.worker:
-            self.worker.output_ready.emit(final_out)
+            if hasattr(self.worker, 'cli_output_ready'):
+                self.worker.cli_output_ready.emit(final_out)
+            else:
+                self.worker.output_ready.emit(final_out)
 
         # Truncate for TTS if needed
         if len(final_out) > MAX_OUTPUT_LENGTH:

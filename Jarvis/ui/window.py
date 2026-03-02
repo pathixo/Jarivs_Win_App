@@ -1,4 +1,5 @@
 import sys
+import os
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QFrame, QGraphicsDropShadowEffect, 
                              QSizePolicy, QApplication, QLineEdit, QTextEdit)

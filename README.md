@@ -67,7 +67,8 @@ Jarvis:  Here are your Python files.
 | 🔄 **Provider Failover** | If one LLM is down or rate-limited, Jarvis auto-switches to another |
 | 💬 **Conversation Memory** | Sliding-window context (20 messages) for multi-turn conversations |
 | 🎨 **Colored Terminal** | Semantic coloring — cyan for input, green for AI, yellow for commands, magenta for output |
-| 🖥️ **Desktop UI** | PyQt6 window with embedded terminal, thinking orb, command input, and system tray |
+| 🖥️ **Dual UI Windows** | Main PyQt6 window + separate command execution terminal (Gemini CLI-style) |
+| 📺 **Command Terminal** | Dedicated read-only terminal displaying real-time shell command execution and output |
 | ⌨️ **Type or Talk** | Use the GUI command input bar *or* voice — both go through the same pipeline |
 | 📦 **One-Click Launch** | `run_jarvis.bat` handles venv, dependencies, and env setup automatically |
 
@@ -203,37 +204,95 @@ Or manually:
 python -m Jarvis.main
 ```
 
+### Terminal Window
+
+When Jarvis starts, two windows will appear:
+
+1. **Main GUI Window**: The primary Jarvis interface with the thinking orb, status indicators, and command input panel.
+2. **Command Terminal**: A dedicated read-only terminal window displaying real-time shell command execution and output.
+
+#### Command Terminal Features
+
+The separate command terminal provides a clean, focused view of all executed commands and their results:
+
+| Feature | Description |
+|---|---|
+| **Command Display** | Shows executed PowerShell commands with timestamps in cyan |
+| **Output View** | Displays command output in white (or red for errors) |
+| **Status Bar** | Real-time listener status (LISTENING, PROCESSING, etc.) |
+| **Auto-scroll** | New commands and output automatically scroll into view |
+| **Read-only** | Users cannot type commands (input only via main GUI or voice) |
+| **Branding** | Jarvis-themed header with execution counter |
+
+#### Example Terminal Display
+
+```
+JARVIS - Autonomous AI Command Terminal
+════════════════════════════════════════════════════════════
+  [14:32:15] [EXEC] Get-Process | Where-Object {$_.Name -eq "notepad"}
+  
+  Handles  NPM(K)    PM(M)      WS(M)  CPU(s)     Id  SI ProcessName
+  ─────  ──────    ─────      ─────  ──────     ──  ── ───────────
+    247      12    45.23      89.56   1.23   5432   1  notepad
+
+════════════════════════════════════════════════════════════
+```
+
+**Note:** The terminal window only shows shell command execution — conversation logs and voice input are displayed in the main GUI window.
+
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                      Jarvis App                          │
-│                                                          │
-│  ┌──────────┐    ┌──────────────┐    ┌───────────────┐   │
-│  │ Listener │───▶│ Orchestrator │───▶│    Brain      │   │
-│  │ (Voice)  │    │  (Router)    │◀───│ (Multi-LLM)   │   │
-│  └──────────┘    │              │    │               │   │
-│       │          │  ┌────────┐  │    │ ┌───────────┐ │   │
-│       │          │  │ Tools  │  │    │ │  Persona  │ │   │
-│       │          │  └────────┘  │    │ │  Manager  │ │   │
-│       │          │  ┌────────┐  │    │ └───────────┘ │   │
-│       │          │  │ Shell  │  │    └───────────────┘   │
-│       │          │  └────────┘  │     ▲  ▲  ▲  ▲        │
-│       ▼          └──────┬───────┘     │  │  │  │         │
-│  ┌──────────┐           │             │  │  │  └ Ollama  │
-│  │  STT     │    ┌──────▼───────┐     │  │  └── Grok    │
-│  │(Whisper) │    │     TTS      │     │  └───── Gemini  │
-│  └──────────┘    │  (Edge-TTS)  │     └──────── Groq    │
-│                  │  per-persona │                        │
-│                  └──────────────┘                        │
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │      PyQt6 UI (Window + Tray + Command Input)    │    │
+┌────────────────────────────────────────────────────────────┐
+│                      Jarvis App (Single Process)           │
+│                                                            │
+│  ┌──────────┐    ┌──────────────┐    ┌───────────────┐    │
+│  │ Listener │───▶│ Orchestrator │───▶│    Brain      │    │
+│  │ (Voice)  │    │  (Router)    │◀───│ (Multi-LLM)   │    │
+│  └──────────┘    │              │    │               │    │
+│       │          │  ┌────────┐  │    │ ┌───────────┐ │    │
+│       │          │  │ Tools  │  │    │ │  Persona  │ │    │
+│       │          │  └────────┘  │    │ │  Manager  │ │    │
+│       │          │  ┌────────┐  │    │ └───────────┘ │    │
+│       │          │  │ Shell  │  │    └───────────────┘    │
+│       │          │  └────────┘  │     ▲  ▲  ▲  ▲         │
+│       ▼          └──────┬───────┘     │  │  │  │          │
+│  ┌──────────┐           │      ┌──────┴──┴──┴──┴──┐       │
+│  │  STT     │    ┌──────▼────┐ │  Terminal Bridge │       │
+│  │(Whisper) │    │    TTS    │ └──────┬───────────┘       │
+│  └──────────┘    │ (Edge-TTS)│        │                   │
+│                  └───────────┘        │                   │
+│                                       │                   │
+│  ┌────────────────────────────────────┼──────────────┐    │
+│  │        PyQt6 Main GUI Window       │              │    │
+│  │  ┌────────────────────────────┐   │              │    │
+│  │  │  Thinking Orb + Status     │   │              │    │
+│  │  ├────────────────────────────┤   │              │    │
+│  │  │  Terminal Display          │   │              │    │
+│  │  ├────────────────────────────┤   │              │    │
+│  │  │  Command Input Panel       │   │              │    │
+│  │  └────────────────────────────┘   │              │    │
+│  └────────────────────────────────────┼──────────────┘    │
+│                                       │                   │
+│  ┌────────────────────────────────────▼──────────────┐    │
+│  │    Separate Command Terminal Window               │    │
+│  │  ┌────────────────────────────────────────────┐  │    │
+│  │  │  JARVIS - Command Execution Terminal       │  │    │
+│  │  ├────────────────────────────────────────────┤  │    │
+│  │  │  [timestamp] [EXEC] command output...      │  │    │
+│  │  │  [timestamp] [EXEC] another command...     │  │    │
+│  │  │  (Read-only, displays shell output only)  │  │    │
+│  │  └────────────────────────────────────────────┘  │    │
 │  └──────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────┘
-```
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+   LLM Providers
+   ├─ Ollama (local)
+   ├─ Groq (cloud)
+   ├─ Gemini (cloud)
+   └─ Grok (cloud)
 
 ### How It Works — The "Speak-to-Shell" Pipeline
 
@@ -270,8 +329,9 @@ Antigravity/
     │
     ├── core/
     │   ├── brain.py            # Multi-provider LLM interface (Groq/Gemini/Grok/Ollama)
-    │   ├── orchestrator.py     # Command router & shell executor
+    │   ├── orchestrator.py     # Command router & shell executor (emits terminal signals)
     │   ├── personas.py         # 🆕 Persona profiles & manager
+    │   ├── terminal_bridge.py  # 🆕 Inter-process communication for terminal updates
     │   ├── tools.py            # Sandboxed file system operations
     │   └── colors.py           # Terminal color utilities
     │
@@ -285,8 +345,10 @@ Antigravity/
     │   └── visuals.py          # Thinking orb animation
     │
     ├── ui/
-    │   ├── window.py           # Main PyQt6 window with command input panel
-    │   └── tray.py             # System tray icon & menu
+    │   ├── window.py               # Main PyQt6 window with command input panel
+    │   ├── terminal_window.py      # 🆕 Separate command execution terminal window
+    │   ├── terminal_branding.py    # 🆕 Terminal ASCII art logo & styling
+    │   └── tray.py                 # System tray icon & menu
     │
     └── tests/
         └── test_orchestrator.py # 19 unit tests (commands, personas, voices, safety)
