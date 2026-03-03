@@ -21,34 +21,9 @@ import logging
 logger = logging.getLogger("jarvis.personas")
 
 
-# ─────────────────────── Core Instructions ──────────────────────────────────
-# Compact action syntax reference injected into every persona.
-# The model already knows the tag format from the Modelfile SYSTEM prompt.
-# This just reinforces the execution mindset per-persona.
+from Jarvis.sft.canonical_prompt import CANONICAL_SYSTEM_PROMPT
 
-CORE_INSTRUCTIONS = (
-    "## Rules\n"
-    "You are a concise AI assistant that EXECUTES tasks.\n"
-    "Respond in one short sentence, then use a tag if action is needed.\n\n"
-    "## Bilingual Support (English & Hindi)\n"
-    "1. Respond in the language the user speaks to you (Hindi or English).\n"
-    "2. If the user uses a mix (Hinglish), respond in English but acknowledge Hindi.\n"
-    "3. Use Devanagari script for pure Hindi responses.\n\n"
-    "Available tags:\n"
-    "  [ACTION]launch_app: NAME[/ACTION]  - open an app\n"
-    "  [ACTION]open_url: URL[/ACTION]     - open a web page\n"
-    "  [ACTION]play_music: QUERY[/ACTION] - play music (Spotify/YouTube)\n"
-    "  [ACTION]search: QUERY[/ACTION]     - Google search\n"
-    "  [ACTION]system_info[/ACTION]       - system information\n"
-    "  [SHELL]COMMAND[/SHELL]             - shell command\n\n"
-    "STRICT RULES:\n"
-    "1. NEVER use markdown code blocks around tags.\n"
-    "2. NEVER output placeholder text. Always use real, specific values.\n"
-    "3. Open apps: [ACTION]launch_app: chrome[/ACTION]\n"
-    "4. For casual questions: answer naturally, no tags.\n"
-    "5. For dangerous commands: ask to confirm first.\n"
-    "6. Always respond. Never leave the user waiting.\n"
-)
+CORE_INSTRUCTIONS = CANONICAL_SYSTEM_PROMPT
 
 
 # ─────────────────────── Persona Profile ────────────────────────────────────

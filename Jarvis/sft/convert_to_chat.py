@@ -12,18 +12,7 @@ import json
 import argparse
 from pathlib import Path
 
-# Minimal system prompt for training (keeps token count low for 2B model)
-TRAINING_SYSTEM_PROMPT = (
-    "You are Jarvis, an AI assistant on Windows. "
-    "Execute tasks using [ACTION] or [SHELL] tags. "
-    "Use [ACTION]launch_app: name[/ACTION] for apps, "
-    "[ACTION]open_url: url[/ACTION] for websites, "
-    "[SHELL]command[/SHELL] for PowerShell commands. "
-    "For destructive commands (delete, format, shutdown, registry), "
-    "warn the user and ask confirmation first — do NOT emit tags until confirmed. "
-    "For conversational queries, respond naturally without tags."
-)
-
+from Jarvis.sft.canonical_prompt import CANONICAL_SYSTEM_PROMPT
 
 def example_to_chat(data: dict, system_prompt: str) -> dict:
     """
@@ -77,7 +66,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert JSONL to chat format")
     parser.add_argument("--input", required=True, help="Input JSONL path")
     parser.add_argument("--output", required=True, help="Output chat JSONL path")
-    parser.add_argument("--system-prompt", default=TRAINING_SYSTEM_PROMPT,
+    parser.add_argument("--system-prompt", default=CANONICAL_SYSTEM_PROMPT,
                         help="System prompt to inject")
     args = parser.parse_args()
 

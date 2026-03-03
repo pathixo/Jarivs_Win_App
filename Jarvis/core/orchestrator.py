@@ -194,6 +194,7 @@ class Orchestrator:
         
         self.confirmation_mode = False  # Ask before running any shell command
         self.wsl_mode = False           # Run risky/all commands in WSL
+        self.seamless_mode = True       # AUTO-SWITCH: Use cloud (Gemini/Groq) if local is slow
         self._confirm_callback = None   # Callback(command_text) -> bool
 
         # OS Abstraction Layer
@@ -208,8 +209,26 @@ class Orchestrator:
             active = self.brain.personas.get_active()
             self.tts.set_voice(active.voice)
             self.tts.set_rate(active.tts_rate)
+            
+        # Start health monitor for Seamless Mode
+        threading.Thread(target=self._health_monitor_loop, daemon=True).start()
 
-        logger.info("Orchestrator initialized | platform=%s", self._backend.platform_name)
+        logger.info("Orchestrator initialized | platform=%s | seamless=%s", 
+                    self._backend.platform_name, self.seamless_mode)
+
+    def _health_monitor_loop(self):
+        """Monitor local component health and auto-adjust seamless mode settings."""
+        while True:
+            try:
+                # Check Ollama health
+                ollama_ok = self.brain._backends[Provider.OLLAMA].health_check()
+                if not ollama_ok and self.seamless_mode:
+                    logger.warning("Ollama unreachable, seamless mode forcing Cloud fallback")
+                
+                time.sleep(60) # Check every minute
+            except Exception as e:
+                logger.error("Health monitor error: %s", e)
+                time.sleep(60)
 
     # ── Main Entry Point ────────────────────────────────────────────────────
 
@@ -1145,6 +1164,7 @@ class Orchestrator:
             "-----------------------------------\n"
             "  shell confirmation on/off - Toggle ask-before-exec\n"
             "  shell wsl on/off         - Toggle WSL sandbox for commands\n"
+            "  shell seamless on/off    - Toggle Smart-Switch to Cloud (Gemini/Groq)\n"
             "  shell status             - Show current shell settings\n"
         )
 
@@ -1152,10 +1172,12 @@ class Orchestrator:
         if re.search(r"^shell\s+status$", command_text, re.IGNORECASE):
             conf = "ON" if self.confirmation_mode else "OFF"
             wsl = "ON" if self.wsl_mode else "OFF"
+            seamless = "ON" if self.seamless_mode else "OFF"
             return (
                 "Shell Settings:\n"
                 f"  Confirmation Mode: {conf}\n"
-                f"  WSL Sandbox Mode:  {wsl}"
+                f"  WSL Sandbox Mode:  {wsl}\n"
+                f"  Seamless Cloud:    {seamless}"
             )
 
         # shell confirmation on/off
@@ -1171,5 +1193,12 @@ class Orchestrator:
             state = wsl_match.group(1).lower() == "on"
             self.wsl_mode = state
             return f"WSL sandbox mode turned {'ON' if state else 'OFF'}."
+
+        # shell seamless on/off
+        seamless_match = re.search(r"^shell\s+seamless\s+(on|off)$", command_text, re.IGNORECASE)
+        if seamless_match:
+            state = seamless_match.group(1).lower() == "on"
+            self.seamless_mode = state
+            return f"Seamless Cloud auto-switch turned {'ON' if state else 'OFF'}."
 
         return help_text

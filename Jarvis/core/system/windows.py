@@ -18,6 +18,8 @@ from typing import Optional
 from Jarvis.core.system.actions import ActionResult, ShellResult, ActionType, RiskLevel
 from Jarvis.core.system.backend import SystemBackend
 from Jarvis.core.system.app_registry import AppRegistry, AppEntry
+from Jarvis.core.security_validator import InputValidator, sanitize_powershell_arg
+from Jarvis.core.powershell_safe import SafePowerShellBuilder, run_safe_powershell
 
 logger = logging.getLogger("jarvis.windows_backend")
 
@@ -66,25 +68,24 @@ class WindowsBackend(SystemBackend):
     def _find_app_path(self, app_name: str) -> Optional[str]:
         """
         Power-user app discovery: search for an executable by name.
-        Uses Get-Command and common install directory searches.
+        Uses Get-Command and common install directory searches with injection protection.
         """
-        # 1. Try Get-Command (checks PATH and aliases)
+        # Validate app name first to prevent injection
+        is_valid, sanitized_name = InputValidator.validate_app_name(app_name)
+        if not is_valid:
+            logger.warning("App name validation failed: %s", app_name)
+            return None
+        
+        # 1. Try Get-Command with safe builder
         try:
-            # We use PowerShell to find the executable path
-            cmd = f"Get-Command -Name '*{app_name}*' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1"
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
-                capture_output=True,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                timeout=5
-            )
-            path = result.stdout.strip()
-            if path and os.path.exists(path):
-                return path
-        except Exception:
-            pass
-
+            success, cmd_list, error = SafePowerShellBuilder.build_get_command(sanitized_name)
+            if success:
+                success, stdout, _ = run_safe_powershell(cmd_list, timeout=5)
+                if success and stdout and os.path.exists(stdout):
+                    return stdout
+        except Exception as e:
+            logger.debug("Get-Command search failed: %s", e)
+        
         # 2. Search common install directories (depth-limited for performance)
         search_dirs = [
             os.environ.get("ProgramFiles", "C:\\Program Files"),
@@ -95,25 +96,24 @@ class WindowsBackend(SystemBackend):
         for base_dir in search_dirs:
             if not os.path.exists(base_dir):
                 continue
-            try:
-                # Search for .exe files matching the name in the first 2 levels of subdirectories
-                ps_search = (
-                    f"Get-ChildItem -Path '{base_dir}' -Filter '*{app_name}*.exe' -Recurse -Depth 2 -ErrorAction SilentlyContinue | "
-                    "Select-Object -ExpandProperty FullName -First 1"
-                )
-                result = subprocess.run(
-                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_search],
-                    capture_output=True,
-                    text=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                    timeout=5
-                )
-                path = result.stdout.strip()
-                if path and os.path.exists(path):
-                    return path
-            except Exception:
+            
+            # Validate base directory
+            is_valid, error_msg = InputValidator.validate_file_path(base_dir)
+            if not is_valid:
+                logger.warning("Base directory validation failed: %s - %s", base_dir, error_msg)
                 continue
-
+            
+            try:
+                # Use safe builder for search
+                success, cmd_list, error = SafePowerShellBuilder.build_search_exe(base_dir, sanitized_name)
+                if success:
+                    success, stdout, _ = run_safe_powershell(cmd_list, timeout=5)
+                    if success and stdout and os.path.exists(stdout):
+                        return stdout
+            except Exception as e:
+                logger.debug("Directory search failed for %s: %s", base_dir, e)
+                continue
+        
         return None
 
     def _launch_registered_app(
@@ -149,16 +149,29 @@ class WindowsBackend(SystemBackend):
                 )
 
             elif method == "exe":
-                # Executable launch via Start-Process
-                cmd_parts = ["powershell", "-NoProfile", "-NonInteractive",
-                             "-Command", f"Start-Process '{target}'"]
-                if args:
-                    arg_str = " ".join(f"'{a}'" for a in args)
-                    cmd_parts = ["powershell", "-NoProfile", "-NonInteractive",
-                                 "-Command", f"Start-Process '{target}' -ArgumentList {arg_str}"]
-
+                # Executable launch via Start-Process with injection protection
+                # Validate exe path
+                is_valid, error_msg = InputValidator.validate_file_path(target)
+                if not is_valid:
+                    return ActionResult(
+                        success=False,
+                        message=f"Invalid executable path: {error_msg}",
+                        error="PathValidationError",
+                        action_type=ActionType.APP_NOT_FOUND,
+                    )
+                
+                # Use safe builder
+                success, cmd_list, error = SafePowerShellBuilder.build_launch_process(target, args)
+                if not success:
+                    return ActionResult(
+                        success=False,
+                        message=f"Failed to launch: {error}",
+                        error="BuildError",
+                        action_type=ActionType.APP_NOT_FOUND,
+                    )
+                
                 subprocess.Popen(
-                    cmd_parts,
+                    cmd_list,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
                 return ActionResult(
@@ -205,21 +218,38 @@ class WindowsBackend(SystemBackend):
         app_name: str,
         args: Optional[list[str]] = None,
     ) -> ActionResult:
-        """Fallback: try launching by name directly via Start-Process."""
+        """Fallback: try launching by name directly via Start-Process with injection protection."""
         try:
-            cmd = f"Start-Process '{app_name}'"
-            if args:
-                arg_str = " ".join(f"'{a}'" for a in args)
-                cmd = f"Start-Process '{app_name}' -ArgumentList {arg_str}"
-
+            # Validate app name first
+            is_valid, sanitized_name = InputValidator.validate_app_name(app_name)
+            if not is_valid:
+                return ActionResult(
+                    success=False,
+                    message=f"Invalid application name.",
+                    error="ValidationError",
+                    action_type=ActionType.APP_NOT_FOUND,
+                )
+            
+            # Use safe builder
+            success, cmd_list, error = SafePowerShellBuilder.build_launch_process(sanitized_name, args)
+            if not success:
+                # Fallback: just try to start it directly
+                return ActionResult(
+                    success=True,
+                    message=f"Attempting to open {app_name}.",
+                    output=f"Direct launch: {app_name}",
+                    action_type=ActionType.LAUNCH_APP,
+                    risk_level=RiskLevel.MEDIUM,
+                )
+            
             subprocess.Popen(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                cmd_list,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             return ActionResult(
                 success=True,
                 message=f"Attempting to open {app_name}.",
-                output=f"Direct launch: {cmd}",
+                output=f"Direct launch: {app_name}",
                 action_type=ActionType.LAUNCH_APP,
                 risk_level=RiskLevel.MEDIUM,
             )
@@ -501,7 +531,18 @@ class WindowsBackend(SystemBackend):
             )
 
     def read_file(self, path: str) -> ActionResult:
-        """Read text content of a file."""
+        """Read text content of a file with path validation."""
+        # Validate file path before access
+        is_valid, error_msg = InputValidator.validate_file_path(path)
+        if not is_valid:
+            return ActionResult(
+                success=False,
+                message=f"Access denied: {error_msg}",
+                error="PathValidationError",
+                action_type=ActionType.FILE_READ,
+                risk_level=RiskLevel.CRITICAL,
+            )
+        
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -520,6 +561,7 @@ class WindowsBackend(SystemBackend):
                 action_type=ActionType.FILE_READ,
             )
         except Exception as e:
+            logger.error("Error reading file %s: %s", path[:60], e)
             return ActionResult(
                 success=False,
                 message=f"Error reading file: {e}",
@@ -528,14 +570,35 @@ class WindowsBackend(SystemBackend):
             )
 
     def write_file(self, path: str, content: str) -> ActionResult:
-        """Write content to a file (creates parent dirs if needed)."""
+        """Write content to a file (creates parent dirs if needed) with path validation."""
+        # Validate file path before access
+        is_valid, error_msg = InputValidator.validate_file_path(path)
+        if not is_valid:
+            return ActionResult(
+                success=False,
+                message=f"Access denied: {error_msg}",
+                error="PathValidationError",
+                action_type=ActionType.FILE_WRITE,
+                risk_level=RiskLevel.CRITICAL,
+            )
+        
         try:
             parent = os.path.dirname(path)
             if parent and not os.path.exists(parent):
+                # Validate parent path as well
+                is_valid, error_msg = InputValidator.validate_file_path(parent)
+                if not is_valid:
+                    return ActionResult(
+                        success=False,
+                        message=f"Cannot create parent directory: {error_msg}",
+                        error="PathValidationError",
+                        action_type=ActionType.FILE_WRITE,
+                    )
                 os.makedirs(parent, exist_ok=True)
-
+            
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
+            
             return ActionResult(
                 success=True,
                 message=f"File written: {os.path.basename(path)}",
@@ -544,6 +607,7 @@ class WindowsBackend(SystemBackend):
                 risk_level=RiskLevel.MEDIUM,
             )
         except Exception as e:
+            logger.error("Error writing file %s: %s", path[:60], e)
             return ActionResult(
                 success=False,
                 message=f"Error writing file: {e}",
@@ -577,24 +641,36 @@ class WindowsBackend(SystemBackend):
     # ── Notifications ───────────────────────────────────────────────────
 
     def notify(self, title: str, message: str) -> ActionResult:
-        """Show a Windows toast notification via PowerShell."""
+        """Show a Windows toast notification via PowerShell with injection protection."""
+        # Validate notification content
+        is_valid, error_msg = InputValidator.validate_notification(title, message)
+        if not is_valid:
+            return ActionResult(
+                success=False,
+                message=f"Invalid notification: {error_msg}",
+                error="ValidationError",
+                action_type=ActionType.NOTIFICATION,
+            )
+        
         try:
-            # Use PowerShell BurntToast or built-in notification
-            ps_script = (
-                f"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
-                f"ContentType = WindowsRuntime] > $null; "
-                f"$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
-                f"[Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
-                f"$text = $template.GetElementsByTagName('text'); "
-                f"$text.Item(0).AppendChild($template.CreateTextNode('{title}')) > $null; "
-                f"$text.Item(1).AppendChild($template.CreateTextNode('{message}')) > $null; "
-                f"$toast = [Windows.UI.Notifications.ToastNotification]::new($template); "
-                f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Jarvis').Show($toast)"
-            )
+            # Use safe builder for notification
+            success, cmd_list, error = SafePowerShellBuilder.build_notify_action(title, message)
+            if not success:
+                return ActionResult(
+                    success=False,
+                    message=f"Failed to build notification: {error}",
+                    error="BuildError",
+                    action_type=ActionType.NOTIFICATION,
+                )
+            
+            # Run in background without waiting
             subprocess.Popen(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                cmd_list,
                 creationflags=subprocess.CREATE_NO_WINDOW,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
+            
             return ActionResult(
                 success=True,
                 message="Notification sent.",

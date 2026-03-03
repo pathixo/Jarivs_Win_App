@@ -5,6 +5,9 @@ Generates a larger training dataset by combining:
   - App Registry aliases → app_launch / url_open examples
   - Risk patterns → dangerous / critical examples
   - Template variations → diverse phrasings
+  - Multi-turn conversations → follow-up questions
+  - Bilingual examples → Hindi/Hinglish support
+  - Persona-varied responses → 30% with Jarvis voice personality
 
 Usage:
     python -m Jarvis.sft.generate_dataset --out sft/train.jsonl --count 500
@@ -14,9 +17,30 @@ import json
 import os
 import random
 import argparse
+import logging
 from pathlib import Path
+from typing import List, Dict, Set
+
+logger = logging.getLogger(__name__)
 
 # ─────────────────────── Phrasing Templates ─────────────────────────────────
+
+PERSONA_RESPONSES = [
+    "Right away, sir.",
+    "Got it, opening {app} for you right now.",
+    "At your service. {action}",
+    "Absolutely, I'll {action} immediately.",
+]
+
+HINDI_TEMPLATES = [
+    "फाइलें दिखाओ", "डायरेक्टरी खोलो", "समय बताओ", "सिस्टम जानकारी",
+    "ब्राउज़र खोलो", "नमस्ते", "धन्यवाद", "ठीक है",
+]
+
+HINGLISH_TEMPLATES = [
+    "show meri files", "open chrome browser", "create a folder",
+    "what time hai", "tell me system info", "close this window",
+]
 
 LAUNCH_TEMPLATES = [
     "open {app}",
@@ -143,6 +167,45 @@ def load_app_registry() -> dict:
         return json.load(f)
 
 
+def assign_split(example_id: str) -> str:
+    """
+    Deterministically assign train/val/test split based on example ID hash.
+    Ensures 70% train, 20% val, 10% test and is reproducible regardless of order.
+    """
+    hash_val = hash(example_id) % 10
+    if hash_val < 7:
+        return "train"
+    elif hash_val < 9:
+        return "val"
+    else:
+        return "test"
+
+
+def expand_templates_with_cartesian(base_templates: list, suffixes: list, max_attempts: int = 100) -> list:
+    """
+    Expand templates using Cartesian product with suffixes to avoid exhaustion.
+    Used when count > len(templates).
+    """
+    if len(base_templates) == 0:
+        return []
+    
+    expanded = []
+    attempts = 0
+    
+    for base in base_templates:
+        for suffix in suffixes:
+            if attempts >= max_attempts:
+                logger.warning(f"Template expansion hit max_attempts ({max_attempts}). Generated {len(expanded)} variations.")
+                return expanded
+            expanded.append(f"{base} {suffix}".strip())
+            attempts += 1
+    
+    return expanded
+
+
+
+
+
 def generate_app_examples(registry: dict, target_count: int, seen_inputs: set) -> list[dict]:
     """Generate app launch and URL open examples from registry."""
     examples = []
@@ -150,7 +213,9 @@ def generate_app_examples(registry: dict, target_count: int, seen_inputs: set) -
     
     attempts = 0
     idx = 0
-    while len(examples) < target_count and attempts < target_count * 10:
+    max_attempts = target_count * 10
+    
+    while len(examples) < target_count and attempts < max_attempts:
         attempts += 1
         app_key, app_data = random.choice(app_items)
         display = app_data["display_name"]
@@ -162,12 +227,14 @@ def generate_app_examples(registry: dict, target_count: int, seen_inputs: set) -
         if method == "url":
             template = random.choice(URL_TEMPLATES)
             user_input = template.format(app=alias)
-            if user_input in seen_inputs: continue
+            if user_input in seen_inputs:
+                continue
             seen_inputs.add(user_input)
             response = random.choice(URL_RESPONSES)
+            example_id = f"gen_url_{idx:04d}"
             examples.append({
-                "id": f"gen_url_{idx:04d}",
-                "split": random.choice(["train", "train", "train", "val"]),
+                "id": example_id,
+                "split": assign_split(example_id),
                 "scenario": "url_open",
                 "user_input": user_input,
                 "assistant_text": response.format(display=display),
@@ -182,12 +249,14 @@ def generate_app_examples(registry: dict, target_count: int, seen_inputs: set) -
         else:
             template = random.choice(LAUNCH_TEMPLATES)
             user_input = template.format(app=alias)
-            if user_input in seen_inputs: continue
+            if user_input in seen_inputs:
+                continue
             seen_inputs.add(user_input)
             response = random.choice(LAUNCH_RESPONSES)
+            example_id = f"gen_app_{idx:04d}"
             examples.append({
-                "id": f"gen_app_{idx:04d}",
-                "split": random.choice(["train", "train", "train", "val"]),
+                "id": example_id,
+                "split": assign_split(example_id),
                 "scenario": "app_launch",
                 "user_input": user_input,
                 "assistant_text": response.format(display=display),
@@ -200,6 +269,9 @@ def generate_app_examples(registry: dict, target_count: int, seen_inputs: set) -
             })
             idx += 1
 
+    if attempts >= max_attempts:
+        logger.warning(f"generate_app_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{target_count} examples.")
+    
     return examples
 
 
@@ -208,16 +280,20 @@ def generate_shell_examples(count: int, seen_inputs: set) -> list[dict]:
     examples = []
     attempts = 0
     idx = 0
-    while len(examples) < count and attempts < count * 10:
+    max_attempts = count * 10
+    
+    while len(examples) < count and attempts < max_attempts:
         attempts += 1
         base = random.choice(SHELL_SAFE_EXAMPLES)
         name = random.choice(RANDOM_NAMES)
         user_input = base["input"].format(name=name)
-        if user_input in seen_inputs: continue
+        if user_input in seen_inputs:
+            continue
         seen_inputs.add(user_input)
+        example_id = f"gen_shell_{idx:04d}"
         examples.append({
-            "id": f"gen_shell_{idx:04d}",
-            "split": random.choice(["train", "train", "train", "val"]),
+            "id": example_id,
+            "split": assign_split(example_id),
             "scenario": "shell_safe",
             "user_input": user_input,
             "assistant_text": base["response"].format(name=name),
@@ -229,6 +305,10 @@ def generate_shell_examples(count: int, seen_inputs: set) -> list[dict]:
             "expected_outcome": "executed",
         })
         idx += 1
+    
+    if attempts >= max_attempts:
+        logger.warning(f"generate_shell_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{count} examples.")
+    
     return examples
 
 
@@ -237,17 +317,21 @@ def generate_danger_examples(count: int, seen_inputs: set) -> list[dict]:
     examples = []
     attempts = 0
     idx = 0
-    while len(examples) < count and attempts < count * 10:
+    max_attempts = count * 10
+    
+    while len(examples) < count and attempts < max_attempts:
         attempts += 1
         base = random.choice(DANGEROUS_TEMPLATES)
         folder = random.choice(FOLDER_NAMES)
         service = random.choice(SERVICE_NAMES)
         user_input = base["input"].format(folder=folder, service=service)
-        if user_input in seen_inputs: continue
+        if user_input in seen_inputs:
+            continue
         seen_inputs.add(user_input)
+        example_id = f"gen_danger_{idx:04d}"
         examples.append({
-            "id": f"gen_danger_{idx:04d}",
-            "split": random.choice(["train", "train", "val"]),
+            "id": example_id,
+            "split": assign_split(example_id),
             "scenario": "shell_dangerous",
             "user_input": user_input,
             "assistant_text": base["response"].format(folder=folder, service=service),
@@ -259,6 +343,10 @@ def generate_danger_examples(count: int, seen_inputs: set) -> list[dict]:
             "expected_outcome": "confirmed",
         })
         idx += 1
+    
+    if attempts >= max_attempts:
+        logger.warning(f"generate_danger_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{count} examples.")
+    
     return examples
 
 
@@ -267,16 +355,20 @@ def generate_critical_examples(count: int, seen_inputs: set) -> list[dict]:
     examples = []
     attempts = 0
     idx = 0
-    while len(examples) < count and attempts < count * 10:
+    max_attempts = count * 10
+    
+    while len(examples) < count and attempts < max_attempts:
         attempts += 1
         base = random.choice(CRITICAL_TEMPLATES)
         drive = random.choice(DRIVE_LETTERS)
         user_input = base["input"].format(drive=drive)
-        if user_input in seen_inputs: continue
+        if user_input in seen_inputs:
+            continue
         seen_inputs.add(user_input)
+        example_id = f"gen_critical_{idx:04d}"
         examples.append({
-            "id": f"gen_critical_{idx:04d}",
-            "split": random.choice(["train", "train", "val"]),
+            "id": example_id,
+            "split": assign_split(example_id),
             "scenario": "shell_critical",
             "user_input": user_input,
             "assistant_text": base["response"].format(drive=drive),
@@ -288,6 +380,10 @@ def generate_critical_examples(count: int, seen_inputs: set) -> list[dict]:
             "expected_outcome": "blocked",
         })
         idx += 1
+    
+    if attempts >= max_attempts:
+        logger.warning(f"generate_critical_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{count} examples.")
+    
     return examples
 
 
@@ -296,49 +392,72 @@ def generate_conversational_examples(count: int, seen_inputs: set) -> list[dict]
     examples = []
     attempts = 0
     idx = 0
-    while len(examples) < count and attempts < count * 10:
+    max_attempts = count * 10
+    
+    while len(examples) < count and attempts < max_attempts:
         attempts += 1
         base = random.choice(CONVERSATIONAL_EXAMPLES)
         user_input = base["input"]
-        if user_input in seen_inputs: continue
+        if user_input in seen_inputs:
+            continue
         seen_inputs.add(user_input)
+        response = base["response"]
+        use_persona = random.random() < 0.3  # 30% persona
+        if use_persona:
+            response = random.choice(PERSONA_RESPONSES).split("{app}")[0].strip()
+        
+        example_id = f"gen_conv_{idx:04d}"
         examples.append({
-            "id": f"gen_conv_{idx:04d}",
-            "split": random.choice(["train", "train", "train", "val"]),
+            "id": example_id,
+            "split": assign_split(example_id),
             "scenario": "conversational",
             "user_input": user_input,
-            "assistant_text": base["response"],
+            "assistant_text": response,
             "action_tags": [],
             "shell_tags": [],
             "risk_level": "low",
             "requires_confirmation": False,
             "should_block": False,
             "expected_outcome": "conversational",
+            "has_persona": use_persona,
         })
         idx += 1
+    
+    if attempts >= max_attempts:
+        logger.warning(f"generate_conversational_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{count} examples.")
+    
     return examples
 
 
 def generate_system_info_examples(count: int, seen_inputs: set) -> list[dict]:
     """Generate system info examples."""
     examples = []
-    templates = [
+    base_templates = [
         "show me my full system specs", "what hardware do i have", "give me a system report", 
         "hey tell me about this computer", "whats my machine spec", "pull up my pc info",
         "system specs", "tell me my ram and cpu"
     ]
+    suffix_variations = ["please", "now", "rn", "for me", "quick", ""]
+    
+    template_pool = base_templates.copy()
+    if count > len(base_templates):
+        expanded = expand_templates_with_cartesian(base_templates, suffix_variations, max_attempts=count*2)
+        template_pool = expanded[:count*2]
+    
     attempts = 0
     idx = 0
-    while len(examples) < count and attempts < count * 10:
+    max_attempts = count * 10
+    
+    while len(examples) < count and attempts < max_attempts:
         attempts += 1
-        user_input = random.choice(templates)
-        if count > len(templates):
-            user_input = f"{user_input} {random.choice(['please', 'now', 'rn', 'for me', 'quick', ''])}".strip()
-        if user_input in seen_inputs: continue
+        user_input = random.choice(template_pool)
+        if user_input in seen_inputs:
+            continue
         seen_inputs.add(user_input)
+        example_id = f"gen_sys_{idx:04d}"
         examples.append({
-            "id": f"gen_sys_{idx:04d}",
-            "split": random.choice(["train", "train", "val"]),
+            "id": example_id,
+            "split": assign_split(example_id),
             "scenario": "system_info",
             "user_input": user_input,
             "assistant_text": "Fetching system info.",
@@ -350,6 +469,10 @@ def generate_system_info_examples(count: int, seen_inputs: set) -> list[dict]:
             "expected_outcome": "executed",
         })
         idx += 1
+    
+    if attempts >= max_attempts:
+        logger.warning(f"generate_system_info_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{count} examples.")
+    
     return examples
 
 
@@ -358,16 +481,20 @@ def generate_mixed_examples(count: int, seen_inputs: set) -> list[dict]:
     examples = []
     attempts = 0
     idx = 0
-    while len(examples) < count and attempts < count * 10:
+    max_attempts = count * 10
+    
+    while len(examples) < count and attempts < max_attempts:
         attempts += 1
         app = random.choice(["chrome", "vscode", "discord", "notepad", "spotify"])
         folder = random.choice(FOLDER_NAMES)
         user_input = f"open {app} and create folder {folder} {random.choice(['please', 'now', 'rn', ''])}".strip()
-        if user_input in seen_inputs: continue
+        if user_input in seen_inputs:
+            continue
         seen_inputs.add(user_input)
+        example_id = f"gen_mix_{idx:04d}"
         examples.append({
-            "id": f"gen_mix_{idx:04d}",
-            "split": random.choice(["train", "train", "val"]),
+            "id": example_id,
+            "split": assign_split(example_id),
             "scenario": "mixed",
             "user_input": user_input,
             "assistant_text": f"Opening {app} and creating folder {folder}.",
@@ -379,6 +506,10 @@ def generate_mixed_examples(count: int, seen_inputs: set) -> list[dict]:
             "expected_outcome": "executed",
         })
         idx += 1
+    
+    if attempts >= max_attempts:
+        logger.warning(f"generate_mixed_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{count} examples.")
+    
     return examples
 
 
@@ -387,20 +518,24 @@ def generate_multi_action_examples(count: int, seen_inputs: set) -> list[dict]:
     examples = []
     attempts = 0
     idx = 0
-    while len(examples) < count and attempts < count * 10:
+    max_attempts = count * 10
+    
+    while len(examples) < count and attempts < max_attempts:
         attempts += 1
         app1 = random.choice(["chrome", "vscode", "discord", "notepad"])
         app2 = random.choice(["spotify", "steam", "figma", "github"])
         user_input = f"open {app1} and go to {app2} {random.choice(['please', 'now', 'rn', ''])}".strip()
-        if user_input in seen_inputs: continue
+        if user_input in seen_inputs:
+            continue
         seen_inputs.add(user_input)
         
         is_url = app2 in ["github", "figma"]
         tag2 = f"open_url: https://{app2}.com" if is_url else f"launch_app: {app2}"
         
+        example_id = f"gen_multi_{idx:04d}"
         examples.append({
-            "id": f"gen_multi_{idx:04d}",
-            "split": random.choice(["train", "train", "val"]),
+            "id": example_id,
+            "split": assign_split(example_id),
             "scenario": "multi_action",
             "user_input": user_input,
             "assistant_text": f"Opening {app1} and {app2}.",
@@ -412,7 +547,153 @@ def generate_multi_action_examples(count: int, seen_inputs: set) -> list[dict]:
             "expected_outcome": "executed",
         })
         idx += 1
+    
+    if attempts >= max_attempts:
+        logger.warning(f"generate_multi_action_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{count} examples.")
+    
     return examples
+
+
+
+def generate_multi_turn_examples(count: int, seen_inputs: set) -> list[dict]:
+    """
+    Generate multi-turn conversation examples (2-3 turn sequences).
+    Teaches model to handle follow-up questions and context persistence.
+    Target: ~5-8% of total dataset.
+    """
+    examples = []
+    
+    multi_turn_templates = [
+        {
+            "turns": [
+                {"input": "what time is it", "response": "It's currently 3:45 PM."},
+                {"input": "and in 24 hour format", "response": "That would be 15:45 in 24-hour format."},
+            ]
+        },
+        {
+            "turns": [
+                {"input": "open chrome for me", "response": "Opening Chrome browser now."},
+                {"input": "go to google", "response": "Navigating to Google."},
+            ]
+        },
+        {
+            "turns": [
+                {"input": "show me my files", "response": "Displaying your files."},
+                {"input": "sort by date", "response": "Files sorted by date."},
+            ]
+        },
+        {
+            "turns": [
+                {"input": "what's the system memory", "response": "You have 16GB of RAM installed."},
+                {"input": "how much is being used right now", "response": "Currently using about 8GB."},
+            ]
+        },
+        {
+            "turns": [
+                {"input": "create a new folder", "response": "Creating new folder for you."},
+                {"input": "name it project", "response": "Folder created and named 'project'."},
+            ]
+        },
+    ]
+    
+    attempts = 0
+    idx = 0
+    max_attempts = count * 10
+    
+    while len(examples) < count and attempts < max_attempts:
+        attempts += 1
+        template = random.choice(multi_turn_templates)
+        turns = template["turns"]
+        
+        combined_input = " [TURN] ".join([t["input"] for t in turns])
+        if combined_input in seen_inputs:
+            continue
+        seen_inputs.add(combined_input)
+        
+        combined_response = " ".join([t["response"] for t in turns])
+        
+        example_id = f"gen_multiturn_{idx:04d}"
+        examples.append({
+            "id": example_id,
+            "split": assign_split(example_id),
+            "scenario": "multi_turn",
+            "user_input": combined_input,
+            "assistant_text": combined_response,
+            "action_tags": [],
+            "shell_tags": [],
+            "risk_level": "low",
+            "requires_confirmation": False,
+            "should_block": False,
+            "expected_outcome": "executed",
+            "num_turns": len(turns),
+        })
+        idx += 1
+    
+    if attempts >= max_attempts:
+        logger.warning(f"generate_multi_turn_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{count} examples.")
+    
+    return examples
+
+
+def generate_hindi_hinglish_examples(count: int, seen_inputs: set) -> list[dict]:
+    """
+    Generate Hindi and Hinglish bilingual examples (5-10% of dataset).
+    Uses existing Hindi intent patterns and leverages language_detector/hindi_classifier.
+    """
+    examples = []
+    
+    hindi_hinglish_pairs = [
+        ("नमस्ते", "Hello"),
+        ("समय बताओ", "What's the time"),
+        ("फाइलें दिखाओ", "Show my files"),
+        ("ब्राउज़र खोलो", "Open browser"),
+        ("सिस्टम जानकारी", "System info"),
+        ("show meri files", "Show my files"),
+        ("open chrome browser", "Open Chrome"),
+        ("what time है", "What's the time"),
+        ("create folder please", "Create a folder"),
+        ("बंद करो", "Close this"),
+    ]
+    
+    attempts = 0
+    idx = 0
+    max_attempts = count * 10
+    
+    while len(examples) < count and attempts < max_attempts:
+        attempts += 1
+        user_input_native, user_input_en = random.choice(hindi_hinglish_pairs)
+        is_hindi = random.random() < 0.5
+        user_input = user_input_native if is_hindi else user_input_en
+        
+        if user_input in seen_inputs:
+            continue
+        seen_inputs.add(user_input)
+        
+        response = f"Processing {user_input_en} request."
+        language = "hindi" if is_hindi else "hinglish"
+        
+        example_id = f"gen_hindi_{idx:04d}"
+        examples.append({
+            "id": example_id,
+            "split": assign_split(example_id),
+            "scenario": "hindi_hinglish",
+            "language": language,
+            "user_input": user_input,
+            "assistant_text": response,
+            "action_tags": [],
+            "shell_tags": [],
+            "risk_level": "low",
+            "requires_confirmation": False,
+            "should_block": False,
+            "expected_outcome": "executed",
+        })
+        idx += 1
+    
+    if attempts >= max_attempts:
+        logger.warning(f"generate_hindi_hinglish_examples reached max_attempts ({max_attempts}). Generated {len(examples)}/{count} examples.")
+    
+    return examples
+
 
 
 def generate_dataset(total_count: int, output_path: str) -> None:
@@ -432,20 +713,27 @@ def generate_dataset(total_count: int, output_path: str) -> None:
                     ex = json.loads(line)
                     if ex["user_input"] not in seen_inputs:
                         seen_inputs.add(ex["user_input"])
+                        # Apply deterministic split to seed data as well
+                        if "split" not in ex:
+                            ex["split"] = assign_split(ex.get("id", "seed_" + str(hash(ex["user_input"]))))
                         all_examples.append(ex)
 
-    # Target distribution: max 20% per category
-    # app_launch 18%, url_open 12% (combined 30%)
-    # shell_safe 18%, shell_dangerous 15%, shell_critical 7%
-    # conversational 18%, system_info 5%, mixed 4%, multi_action 3%
-    n_app = int(total_count * 0.30)
-    n_shell = int(total_count * 0.18)
-    n_danger = int(total_count * 0.15)
-    n_critical = int(total_count * 0.07)
-    n_sys = int(total_count * 0.05)
-    n_mix = int(total_count * 0.04)
-    n_multi = int(total_count * 0.03)
-    n_conv = total_count - n_app - n_shell - n_danger - n_critical - n_sys - n_mix - n_multi
+    # Distribution breakdown (now includes multi-turn, Hindi/Hinglish):
+    # app_launch 15%, url_open 10% (combined 25%)
+    # shell_safe 15%, shell_dangerous 12%, shell_critical 6% (combined 33%)
+    # conversational 14%, system_info 4%, mixed 3%, multi_action 2% (combined 23%)
+    # multi_turn 5%, hindi_hinglish 4% (combined 9%)
+    
+    n_app = int(total_count * 0.25)
+    n_shell = int(total_count * 0.15)
+    n_danger = int(total_count * 0.12)
+    n_critical = int(total_count * 0.06)
+    n_sys = int(total_count * 0.04)
+    n_mix = int(total_count * 0.03)
+    n_multi = int(total_count * 0.02)
+    n_multiturn = int(total_count * 0.05)
+    n_hindi = int(total_count * 0.04)
+    n_conv = total_count - n_app - n_shell - n_danger - n_critical - n_sys - n_mix - n_multi - n_multiturn - n_hindi
 
     all_examples.extend(generate_app_examples(registry, n_app, seen_inputs))
     all_examples.extend(generate_shell_examples(n_shell, seen_inputs))
@@ -454,6 +742,8 @@ def generate_dataset(total_count: int, output_path: str) -> None:
     all_examples.extend(generate_system_info_examples(n_sys, seen_inputs))
     all_examples.extend(generate_mixed_examples(n_mix, seen_inputs))
     all_examples.extend(generate_multi_action_examples(n_multi, seen_inputs))
+    all_examples.extend(generate_multi_turn_examples(n_multiturn, seen_inputs))
+    all_examples.extend(generate_hindi_hinglish_examples(n_hindi, seen_inputs))
     all_examples.extend(generate_conversational_examples(n_conv, seen_inputs))
 
     # Shuffle
@@ -472,13 +762,15 @@ def generate_dataset(total_count: int, output_path: str) -> None:
         scenarios[ex["scenario"]] = scenarios.get(ex["scenario"], 0) + 1
         splits[ex["split"]] = splits.get(ex["split"], 0) + 1
 
-    print(f"\nGenerated {len(all_examples)} examples -> {output_path}")
+    print(f"\n✓ Generated {len(all_examples)} examples -> {output_path}")
     print(f"\nScenario distribution:")
     for s, c in sorted(scenarios.items()):
         print(f"  {s:25s} {c:5d}  ({100*c/len(all_examples):.1f}%)")
-    print(f"\nSplit distribution:")
-    for s, c in sorted(splits.items()):
-        print(f"  {s:10s} {c:5d}")
+    print(f"\nSplit distribution (deterministic hash-based 70/20/10):")
+    for s in ["train", "val", "test"]:
+        c = splits.get(s, 0)
+        print(f"  {s:10s} {c:5d}  ({100*c/len(all_examples):.1f}%)")
+
 
 
 if __name__ == "__main__":

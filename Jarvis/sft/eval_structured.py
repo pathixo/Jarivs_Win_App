@@ -16,10 +16,15 @@ Usage:
 """
 
 import json
+import logging
 import re
 import argparse
+import urllib.request
+import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger("jarvis.eval_structured")
 
 # Import parsers from the runtime
 import sys
@@ -309,14 +314,211 @@ def evaluate_predictions(data_path: str, predictions_path: str) -> EvalMetrics:
     return metrics
 
 
+# ─────────────────────── Inference / Prediction Generation ──────────────────
+
+def generate_predictions(
+    model_name: str,
+    data_path: str,
+    output_path: str,
+    provider: str = "ollama",
+) -> int:
+    """
+    Run each test example through a live model and write predictions JSONL.
+
+    Each output line has the form::
+
+        {"id": "<example_id>", "prediction": "<full assistant output>"}
+
+    Args:
+        model_name:  Ollama model tag (e.g. ``"jarvis-sft"``) or HuggingFace
+                     model name/path (e.g. ``"Qwen/Qwen2.5-1.5B-Instruct"``).
+        data_path:   Ground-truth JSONL to iterate over.
+        output_path: Where to write the predictions JSONL.
+        provider:    ``"ollama"`` (default) or ``"hf"``.
+
+    Returns:
+        Number of examples processed.
+    """
+    # Import system prompt — same one used during training
+    try:
+        from Jarvis.sft.canonical_prompt import CANONICAL_SYSTEM_PROMPT
+    except ImportError:
+        CANONICAL_SYSTEM_PROMPT = (
+            "You are Jarvis, an AI assistant. "
+            "Respond with [ACTION]...[/ACTION] or [SHELL]...[/SHELL] tags when needed."
+        )
+
+    # ── Load examples ────────────────────────────────────────────────────────
+    examples = []
+    with open(data_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                examples.append(json.loads(line))
+
+    print(f"\nGenerating predictions for {len(examples)} examples "
+          f"using provider='{provider}', model='{model_name}'...")
+
+    # ── Provider: Ollama ─────────────────────────────────────────────────────
+    if provider == "ollama":
+        ollama_url = "http://localhost:11434/api/chat"
+
+        def _ollama_predict(example: dict) -> str:
+            payload = json.dumps({
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": CANONICAL_SYSTEM_PROMPT},
+                    {"role": "user",   "content": example["user_input"]},
+                ],
+                "stream": False,
+            }).encode("utf-8")
+
+            req = urllib.request.Request(
+                ollama_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                    return body.get("message", {}).get("content", "")
+            except urllib.error.URLError as exc:
+                logger.warning(
+                    "Ollama request failed for example '%s': %s — "
+                    "is Ollama running? (ollama serve)",
+                    example.get("id", "?"), exc,
+                )
+                return ""
+
+        predict_fn = _ollama_predict
+
+    # ── Provider: HuggingFace pipeline ──────────────────────────────────────
+    elif provider == "hf":
+        try:
+            from transformers import pipeline as hf_pipeline
+        except ImportError:
+            raise ImportError(
+                "transformers is required for --provider hf. "
+                "Install with: pip install transformers"
+            )
+
+        print(f"  Loading HF model '{model_name}' (this may take a moment)...")
+        pipe = hf_pipeline(
+            "text-generation",
+            model=model_name,
+            trust_remote_code=True,
+            max_new_tokens=256,
+        )
+
+        def _hf_predict(example: dict) -> str:
+            prompt = (
+                f"<|im_start|>system\n{CANONICAL_SYSTEM_PROMPT}<|im_end|>\n"
+                f"<|im_start|>user\n{example['user_input']}<|im_end|>\n"
+                f"<|im_start|>assistant\n"
+            )
+            try:
+                outputs = pipe(prompt, return_full_text=False)
+                return outputs[0]["generated_text"].strip()
+            except Exception as exc:
+                logger.warning(
+                    "HF inference failed for example '%s': %s",
+                    example.get("id", "?"), exc,
+                )
+                return ""
+
+        predict_fn = _hf_predict
+
+    else:
+        raise ValueError(f"Unknown provider '{provider}'. Choose 'ollama' or 'hf'.")
+
+    # ── Run inference and write output ───────────────────────────────────────
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with open(output_path, "w", encoding="utf-8") as fout:
+        for i, example in enumerate(examples, 1):
+            prediction = predict_fn(example)
+            fout.write(json.dumps({
+                "id": example.get("id", f"idx_{i}"),
+                "prediction": prediction,
+            }, ensure_ascii=False) + "\n")
+            count += 1
+            if i % 10 == 0 or i == len(examples):
+                print(f"  {i}/{len(examples)} done", end="\r", flush=True)
+
+    print(f"\n  Predictions written to: {output_path}")
+    return count
+
+
+# ─────────────────────── CLI ─────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate SFT model outputs")
-    parser.add_argument("--data", required=True, help="Ground-truth JSONL path")
+    logging.basicConfig(format="%(levelname)s: %(message)s")
+
+    parser = argparse.ArgumentParser(
+        description="Evaluate SFT model outputs",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Self-eval against ground truth (no model needed)
+  python -m Jarvis.sft.eval_structured --data sft/test.jsonl
+
+  # Evaluate a pre-existing predictions file
+  python -m Jarvis.sft.eval_structured --data sft/test.jsonl --predictions sft/preds.jsonl
+
+  # Generate predictions via Ollama then evaluate
+  python -m Jarvis.sft.eval_structured --data sft/test.jsonl \\
+      --inference --model jarvis-sft --provider ollama
+
+  # Generate predictions via HuggingFace then evaluate
+  python -m Jarvis.sft.eval_structured --data sft/test.jsonl \\
+      --inference --model output/jarvis-gemma-lora --provider hf
+""",
+    )
+    parser.add_argument("--data", required=True,
+                        help="Ground-truth JSONL path")
     parser.add_argument("--predictions", default=None,
-                        help="Predictions JSONL (id + prediction). "
-                             "If omitted, runs self-eval on ground truth.")
+                        help="Pre-existing predictions JSONL (id + prediction). "
+                             "If omitted and --inference is not set, runs self-eval "
+                             "on ground truth.")
+
+    # Inference mode
+    inf_group = parser.add_argument_group("inference mode (generate predictions live)")
+    inf_group.add_argument("--inference", action="store_true",
+                           help="Generate predictions from a live model before evaluating. "
+                                "Requires --model.")
+    inf_group.add_argument("--model", default=None,
+                           help="Model name/tag for inference. "
+                                "Ollama: e.g. 'jarvis-sft'. "
+                                "HF: e.g. 'Qwen/Qwen2.5-1.5B-Instruct' or a local path.")
+    inf_group.add_argument("--provider", choices=["ollama", "hf"], default="ollama",
+                           help="Inference backend: 'ollama' (default) or 'hf' "
+                                "(HuggingFace transformers pipeline).")
+    inf_group.add_argument("--output-predictions", default=None,
+                           help="Where to write generated predictions JSONL. "
+                                "Defaults to <data_dir>/preds.jsonl.")
+
     args = parser.parse_args()
 
+    # ── Validate args ────────────────────────────────────────────────────────
+    if args.inference and not args.model:
+        parser.error("--inference requires --model")
+
+    # ── Inference mode: generate predictions first ───────────────────────────
+    if args.inference:
+        out_preds = args.output_predictions or str(
+            Path(args.data).parent / "preds.jsonl"
+        )
+        generate_predictions(
+            model_name=args.model,
+            data_path=args.data,
+            output_path=out_preds,
+            provider=args.provider,
+        )
+        # Fall through to evaluate the freshly generated file
+        args.predictions = out_preds
+
+    # ── Evaluate ─────────────────────────────────────────────────────────────
     if args.predictions:
         metrics = evaluate_predictions(args.data, args.predictions)
     else:

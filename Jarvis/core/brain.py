@@ -13,7 +13,9 @@ provider failover, latency-aware routing, and structured settings management.
 
 import logging
 import json
+import os
 import re
+import sqlite3
 import time
 import threading
 from dataclasses import dataclass, field
@@ -55,40 +57,9 @@ class Provider(str, Enum):
     GROK   = "grok"
 
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are Jarvis, an autonomous AI desktop assistant. You MUST respond using structured tags for any system action.\n\n"
-    "## Perceived Latency Reduction (CRITICAL)\n"
-    "To provide an 'instant' experience, you MUST always speak a conversational acknowledgment BEFORE any tags. This gives the user immediate feedback while the system prepares the task.\n"
-    "*Example*: 'I'm on it, sir. [SHELL]Get-Process[/SHELL]'\n\n"
-    "## Execution Protocol\n"
-    "You EXECUTE tasks — never just describe them. If you can act, ACT. If you can't, say so in one sentence and offer a brief alternative.\n\n"
-    "## Voice-Optimized Response Rules (CRITICAL)\n"
-    "Your responses will be spoken aloud via TTS. Follow these rules strictly:\n"
-    "1. Keep responses under 2 sentences for simple questions.\n"
-    "2. Never use markdown formatting (no **, ##, ```, bullet points). Write plain conversational English.\n"
-    "3. Never enumerate lists with numbers or bullets — speak naturally.\n"
-    "4. Avoid technical jargon unless specifically asked.\n"
-    "5. Use contractions (I'm, don't, can't) — sound human, not robotic.\n"
-    "6. Respond like a real assistant speaking to someone — concise, warm, direct.\n\n"
-    "## Response Templates (STRICT ADHERENCE REQUIRED)\n"
-    "1. **Action Mode** (for all tasks): Immediate conversational confirmation FIRST, then the tag.\n"
-    "   *Example*: 'Opening Chrome, sir. [ACTION]launch_app: chrome[/ACTION]'\n"
-    "2. **Conversational Mode** (no tasks): Respond naturally, NO tags, no fabricated actions.\n"
-    "   *Example*: 'The weather in London is currently 15 degrees and overcast, sir.'\n\n"
-    "## Rules\n"
-    "1. To launch an app: [ACTION]launch_app: <app_name>[/ACTION]\n"
-    "2. To open a URL: [ACTION]open_url: <url>[/ACTION]\n"
-    "3. To run a shell command: [SHELL]<command>[/SHELL]\n"
-    "4. To get system info: [ACTION]system_info[/ACTION]\n"
-    "5. To play music or search media: [ACTION]play_music: <query>[/ACTION]\n"
-    "6. To execute Python code securely: [ACTION]exec_code: <python_code>[/ACTION]\n"
-    "7. For dangerous commands (shutdown, format, delete), ask for confirmation FIRST.\n"
-    "8. **No Silence**: NEVER leave the user without a response. If an action fails or isn't possible, acknowledge it immediately. 'I'm afraid I couldn't find Spotify installed, sir.'\n\n"
-    "## Safety\n"
-    "- Destructive commands: warn and ask confirmation FIRST.\n"
-    "- Safe commands: execute immediately.\n"
-    "- Never hallucinate paths or flags."
-)
+from Jarvis.sft.canonical_prompt import CANONICAL_SYSTEM_PROMPT
+
+DEFAULT_SYSTEM_PROMPT = CANONICAL_SYSTEM_PROMPT
 
 
 # ─────────────────────────── Settings ───────────────────────────────────────
@@ -128,28 +99,130 @@ class Message:
 
 
 class ConversationMemory:
-    """Sliding-window conversation buffer for multi-turn context."""
+    """
+    Sliding-window conversation buffer with SQLite persistence.
 
-    def __init__(self, max_messages: int = 20):
-        self._messages: list[Message] = []
+    Conversations survive restarts. The last `max_messages` turns are
+    loaded back into memory on startup and written through on every add().
+    The DB is stored at  <DATA_DIR>/conversation_history.db
+    """
+
+    def __init__(self, max_messages: int = 20, session_id: str = "default"):
+        from Jarvis.config import DATA_DIR
         self._max = max_messages
+        self._session_id = session_id
+        self._messages: list[Message] = []
+        self._lock = threading.Lock()
+
+        db_path = os.path.join(DATA_DIR, "conversation_history.db")
+        self._db_path = db_path
+        self._init_db()
+        self._load_recent()
+
+    # ── DB setup ─────────────────────────────────────────────────────────
+
+    def _init_db(self) -> None:
+        """Create the SQLite table if it doesn't exist."""
+        with self._connect() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session   TEXT    NOT NULL,
+                    role      TEXT    NOT NULL,
+                    content   TEXT    NOT NULL,
+                    ts        REAL    NOT NULL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_ts ON messages(session, ts)")
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _load_recent(self) -> None:
+        """Load the most recent `max_messages` turns from DB into memory."""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT role, content, ts FROM messages "
+                    "WHERE session = ? ORDER BY ts ASC",
+                    (self._session_id,),
+                ).fetchall()
+            # Keep only the tail to respect the window size
+            tail = rows[-self._max:]
+            self._messages = [Message(role=r["role"], content=r["content"], timestamp=r["ts"]) for r in tail]
+        except Exception as e:
+            logger.warning("Could not load conversation history: %s", e)
+
+    # ── Public API (unchanged) ────────────────────────────────────────────
 
     def add(self, role: str, content: str) -> None:
-        self._messages.append(Message(role=role, content=content))
-        # Trim oldest (keep system prompt if present)
-        if len(self._messages) > self._max:
-            self._messages = self._messages[-self._max:]
+        msg = Message(role=role, content=content)
+        with self._lock:
+            self._messages.append(msg)
+            if len(self._messages) > self._max:
+                self._messages = self._messages[-self._max:]
+
+        # Persist asynchronously to avoid blocking the LLM pipeline
+        threading.Thread(target=self._persist, args=(msg,), daemon=True).start()
 
     def get_history(self) -> list[dict]:
         """Return history in OpenAI-compatible format."""
-        return [{"role": m.role, "content": m.content} for m in self._messages]
+        with self._lock:
+            return [{"role": m.role, "content": m.content} for m in self._messages]
 
     def clear(self) -> None:
-        self._messages.clear()
+        """Clear in-memory buffer and delete this session's rows from DB."""
+        with self._lock:
+            self._messages.clear()
+        try:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM messages WHERE session = ?", (self._session_id,))
+        except Exception as e:
+            logger.warning("Could not clear persisted history: %s", e)
 
     @property
     def length(self) -> int:
-        return len(self._messages)
+        with self._lock:
+            return len(self._messages)
+
+    # ── Session management helpers ────────────────────────────────────────
+
+    @staticmethod
+    def list_sessions(data_dir: Optional[str] = None) -> list[str]:
+        """Return all session IDs that have stored history."""
+        from Jarvis.config import DATA_DIR as _DATA_DIR
+        db_path = os.path.join(data_dir or _DATA_DIR, "conversation_history.db")
+        if not os.path.exists(db_path):
+            return []
+        try:
+            with sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT session FROM messages ORDER BY session"
+                ).fetchall()
+            return [r[0] for r in rows]
+        except Exception:
+            return []
+
+    # ── Internal ──────────────────────────────────────────────────────────
+
+    def _persist(self, msg: Message) -> None:
+        """Write a single message to the DB (runs in background thread)."""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO messages (session, role, content, ts) VALUES (?, ?, ?, ?)",
+                    (self._session_id, msg.role, msg.content, msg.timestamp),
+                )
+                # Prune rows beyond 2× the window so the DB never grows unbounded
+                conn.execute(
+                    "DELETE FROM messages WHERE session = ? AND id NOT IN "
+                    "(SELECT id FROM messages WHERE session = ? ORDER BY ts DESC LIMIT ?)",
+                    (self._session_id, self._session_id, self._max * 2),
+                )
+        except Exception as e:
+            logger.warning("Failed to persist message: %s", e)
 
 
 # ──────────────────────── Shared HTTP Client ───────────────────────────────
@@ -681,18 +754,13 @@ class Brain:
 
     def generate_response_stream(self, text: str, history: list[dict] | None = None):
         """
-        Yield LLM tokens as they arrive (streaming).
+        Yield LLM tokens as they arrive (streaming) with a 'Fast-Switch' mechanism.
 
-        Uses ProviderRouter for intelligent provider selection based on:
-          - Query complexity (simple→Groq, complex→Gemini, code→Ollama)
-          - Rate limit headroom
-          - Provider health
-
-        Auto-selects the Ollama model based on query complexity when
-        OLLAMA_AUTO_SELECT is enabled. Falls back to non-streaming if the
-        backend does not implement generate_stream().
-
-        Updates conversation memory after the full response is collected.
+        Smart Switch Architecture:
+          1. Select primary provider (Ollama, Gemini, Groq, etc.)
+          2. If primary is 'ollama' and it takes > 4s for the first token,
+             transparently parallelize/failover to Groq or Gemini.
+          3. This ensures zero 'bugging' or silence for the user.
         """
         if not text or not text.strip():
             return
@@ -700,65 +768,94 @@ class Brain:
         conv_history = history if history is not None else self.memory.get_history()
         augmented_settings = self._get_augmented_settings()
 
-        # Use ProviderRouter for intelligent provider selection
+        # 1. Select initial provider
         selected_provider = self.provider_router.select_provider(
             text.strip(), preferred=augmented_settings.provider
         )
         if selected_provider != augmented_settings.provider:
             logger.info("ProviderRouter routed: %s → %s", augmented_settings.provider, selected_provider)
-            print(f"  [Router] {augmented_settings.provider} → {selected_provider}")
             augmented_settings.provider = selected_provider
             augmented_settings.model = self._default_model_for(selected_provider)
 
-        # Adaptive max_tokens based on query complexity
-        adaptive_tokens = self.provider_router.get_max_tokens_for_query(
+        # 2. Adaptive max_tokens
+        augmented_settings.max_tokens = self.provider_router.get_max_tokens_for_query(
             text.strip(), augmented_settings.max_tokens
         )
-        augmented_settings.max_tokens = adaptive_tokens
 
-        # Auto-select Ollama model for this request only
-        original_model = augmented_settings.model
+        # 3. Model auto-selection for Ollama
         if OLLAMA_AUTO_SELECT and augmented_settings.provider == "ollama":
-            selected = self._select_model_for_query(text.strip())
-            if selected != original_model:
-                augmented_settings.model = selected
-                logger.info("Auto-selected model: %s (was: %s)", selected, original_model)
-                print(f"  [Auto-Select] Model: {selected}")
+            augmented_settings.model = self._select_model_for_query(text.strip())
 
-        # Use the selected provider's backend
+        # 4. Execute stream with Smart Switch (Race/Timeout)
         provider_enum = Provider(augmented_settings.provider)
         backend = self._backends[provider_enum]
         full_response = ""
         t0 = time.time()
         first_token_time = None
+        
+        # Timeout for 'Fast-Switch' (Ollama can be slow, so we wait 4s then race)
+        FAST_SWITCH_TIMEOUT = 4.0 if augmented_settings.provider == "ollama" else 15.0
 
         try:
-            for token in backend.generate_stream(augmented_settings, text.strip(), conv_history):
-                if first_token_time is None:
-                    first_token_time = time.time()
-                    ttft_ms = (first_token_time - t0) * 1000
-                    self.provider_router.record_success(augmented_settings.provider, ttft_ms=ttft_ms)
-                    logger.info("TTFT: %.0fms (%s)", ttft_ms, augmented_settings.provider)
-                full_response += token
-                yield token
-        except AttributeError:
-            # Backend doesn't implement generate_stream — fall back
-            logger.warning("Backend %s has no streaming support, falling back", augmented_settings.provider)
-            response = backend.generate(augmented_settings, text.strip(), conv_history)
-            full_response = response
-            yield response
-        except Exception as e:
-            logger.error("Streaming error (%s): %s", augmented_settings.provider, e, exc_info=True)
-            self.provider_router.record_error(augmented_settings.provider)
+            # We use a queue to handle tokens from potentially multiple sources (failover)
+            token_queue = queue.Queue()
+            stop_event = threading.Event()
             
-            # Try failover to another provider
-            fallback_response = self._try_stream_failover(text.strip(), conv_history, augmented_settings)
-            if fallback_response:
-                for token in fallback_response:
-                    full_response += token
-                    yield token
-            else:
-                yield f"Error: {e}"
+            def run_primary():
+                nonlocal first_token_time
+                try:
+                    for token in backend.generate_stream(augmented_settings, text.strip(), conv_history):
+                        if stop_event.is_set(): break
+                        if first_token_time is None: first_token_time = time.time()
+                        token_queue.put(token)
+                    token_queue.put(None) # End of stream
+                except Exception as e:
+                    logger.warning("Primary provider stream error: %s", e)
+                    token_queue.put(e)
+
+            primary_thread = threading.Thread(target=run_primary, daemon=True)
+            primary_thread.start()
+
+            # Wait for first token or timeout
+            start_wait = time.time()
+            while True:
+                try:
+                    # Short poll for token
+                    chunk = token_queue.get(timeout=0.1)
+                    if isinstance(chunk, Exception):
+                        # Primary failed — trigger immediate failover
+                        logger.info("Primary failed, triggering immediate failover")
+                        break
+                    if chunk is None: break # Done
+                    
+                    full_response += chunk
+                    yield chunk
+                    if first_token_time is None: first_token_time = time.time()
+                except queue.Empty:
+                    # Check timeout for Ollama -> Cloud switch
+                    if first_token_time is None and (time.time() - start_wait) > FAST_SWITCH_TIMEOUT:
+                        logger.warning("Primary (%s) timed out, triggering Fast-Switch to Cloud", augmented_settings.provider)
+                        stop_event.set()
+                        break
+                    if not primary_thread.is_alive() and token_queue.empty():
+                        break
+                    continue
+
+            # 5. Handle Failover / Fast-Switch if needed
+            if first_token_time is None:
+                # No token received yet — try Cloud failover
+                fallback_stream = self._try_stream_failover(text.strip(), conv_history, augmented_settings)
+                if fallback_stream:
+                    print(f"  [Smart-Switch] Failing over to Cloud for faster response...")
+                    for token in fallback_stream:
+                        full_response += token
+                        yield token
+                else:
+                    yield f"I'm sorry, sir, but I'm having trouble getting a response from my brain. Please try again in a moment."
+
+        except Exception as e:
+            logger.error("Global stream error: %s", e, exc_info=True)
+            yield f"I'm afraid I encountered a technical error: {e}"
 
         if full_response:
             self.memory.add("user", text.strip())
@@ -843,7 +940,7 @@ class Brain:
                 fallback = self._try_failover(text.strip(), conv_history)
                 if fallback:
                     return fallback
-                return f"Error: Could not connect to {augmented_settings.provider} LLM. Is it running?"
+                return f"I'm sorry, sir, but I couldn't connect to the {augmented_settings.provider} service. Please ensure it is running."
 
             except httpx.TimeoutException:
                 logger.warning("Request timed out (attempt %d/%d)", attempt, self.MAX_RETRIES)
@@ -851,7 +948,7 @@ class Brain:
                 if attempt < self.MAX_RETRIES:
                     time.sleep(self.RETRY_DELAY)
                     continue
-                return f"Error: {augmented_settings.provider} LLM timed out after {augmented_settings.timeout}s."
+                return f"I'm sorry, sir, but the {augmented_settings.provider} service timed out. You might want to try again in a moment."
 
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code if e.response is not None else 0
@@ -868,13 +965,13 @@ class Brain:
                     fallback = self._try_failover(text.strip(), conv_history)
                     if fallback:
                         return fallback
-                    return f"Error: {augmented_settings.provider} rate limited. Try again in a minute or switch provider with 'llm provider groq'."
+                    return f"I'm afraid the {augmented_settings.provider} service is currently rate limited. Please try again in a minute or switch providers."
 
                 # Auth error
                 if status in (401, 403):
-                    return f"Error: {augmented_settings.provider} API key is invalid or expired. Check your .env file."
+                    return f"I'm sorry, sir, but the {augmented_settings.provider} API key appears to be invalid or expired. Please check your credentials."
 
-                return f"Error: {augmented_settings.provider} returned HTTP {status}."
+                return f"I'm sorry, sir, but the {augmented_settings.provider} service returned an error. It might be having some technical issues."
 
             except ValueError as e:
                 logger.error("Value error: %s", e)

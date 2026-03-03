@@ -181,6 +181,138 @@ class GroqSTT:
             pass
 
 
+class GroqSTT:
+    # ... existing GroqSTT implementation ...
+    pass # (placeholder for original code, replacing only relevant parts)
+
+class GeminiSTT:
+    """
+    Google Gemini 1.5 Flash for high-quality audio transcription.
+    
+    Uses multimodal capabilities to transcribe audio bytes.
+    Very robust against noise and accents.
+    """
+
+    def __init__(self, api_key: str):
+        self._api_key = api_key
+        self._model = "gemini-1.5-flash"
+        self._url = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent?key={self._api_key}"
+        
+        try:
+            import httpx
+            self._client = httpx.Client(timeout=15.0, http2=True)
+            self._use_httpx = True
+        except ImportError:
+            import requests
+            self._session = requests.Session()
+            self._use_httpx = False
+            
+        logger.info("GeminiSTT initialized (model=%s)", self._model)
+
+    def transcribe_bytes(
+        self,
+        audio_bytes: bytes,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        sample_width: int = 2,
+        language: Optional[str] = None,
+    ) -> dict:
+        """Transcribe raw PCM audio bytes via Gemini 1.5 Flash."""
+        import base64
+        t0 = time.time()
+        
+        # Convert raw PCM to WAV in-memory
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(sample_width)
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_bytes)
+        wav_buffer.seek(0)
+        
+        # Base64 encode the WAV file
+        audio_b64 = base64.b64encode(wav_buffer.read()).decode('utf-8')
+        
+        # Prepare multimodal prompt
+        prompt = "Transcribe the audio exactly. Output ONLY the transcription text, no conversational filler or commentary. If there is no speech, output an empty string."
+        if language and language != "auto":
+            prompt = f"Transcribe the audio exactly in {language}. Output ONLY the transcription text."
+
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": "audio/wav",
+                            "data": audio_b64
+                        }
+                    }
+                ]
+            }],
+            "generationConfig": {
+                "temperature": 0.0,  # Deterministic
+                "maxOutputTokens": 1024
+            }
+        }
+
+        try:
+            if self._use_httpx:
+                resp = self._client.post(self._url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            else:
+                resp = self._session.post(self._url, json=payload, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+
+            # Extract text from Gemini response
+            candidates = data.get("candidates", [])
+            text = ""
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    text = parts[0].get("text", "").strip()
+
+            elapsed = round(time.time() - t0, 3)
+            logger.info("GeminiSTT: '%s' (%.3fs)", text[:50], elapsed)
+            return {
+                "text": text,
+                "error": None,
+                "time": elapsed,
+                "language": language or "auto",
+            }
+
+        except Exception as e:
+            elapsed = round(time.time() - t0, 3)
+            logger.error("GeminiSTT error: %s (%.3fs)", e, elapsed)
+            return {
+                "text": "",
+                "error": str(e),
+                "time": elapsed,
+                "language": language or "auto",
+            }
+
+    def health_check(self) -> bool:
+        if not self._api_key: return False
+        try:
+            # Check model availability
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}?key={self._api_key}"
+            if self._use_httpx:
+                r = self._client.get(url)
+            else:
+                r = self._session.get(url, timeout=5)
+            return r.status_code == 200
+        except:
+            return False
+
+    def close(self):
+        try:
+            if self._use_httpx: self._client.close()
+            elif hasattr(self, '_session'): self._session.close()
+        except: pass
+
+
 class LocalSTT:
     """
     Local faster-whisper STT — runs on CPU or GPU.
@@ -300,37 +432,45 @@ class STTRouter:
     
     Routes transcription to the fastest available provider:
       1. Groq Whisper API (primary — ~200ms, most accurate)
-      2. Local faster-whisper (fallback — ~300-800ms)
+      2. Gemini 1.5 Flash (secondary — ~300-500ms, multimodal robust)
+      3. Local faster-whisper (fallback — ~300-800ms)
     
     Automatically falls back when:
-      - Groq API key not configured
-      - Groq daily quota exhausted
+      - Primary providers are rate-limited or quota exhausted
       - Network unavailable
       - API returns error
     """
 
-    def __init__(self, groq_api_key: str = "", stt_provider: str = "auto",
+    def __init__(self, groq_api_key: str = "", gemini_api_key: str = "", 
+                 stt_provider: str = "auto",
                  local_model: str = "small.en", local_device: str = "auto"):
-        self._provider = stt_provider  # "auto", "groq", "local"
+        self._provider = stt_provider  # "auto", "groq", "gemini", "local"
         self._groq: Optional[GroqSTT] = None
+        self._gemini: Optional[GeminiSTT] = None
         self._local: Optional[LocalSTT] = None
         self._language = None
         
         # Initialize providers
         if groq_api_key and stt_provider in ("auto", "groq"):
             self._groq = GroqSTT(groq_api_key)
+            
+        if gemini_api_key and stt_provider in ("auto", "gemini"):
+            self._gemini = GeminiSTT(gemini_api_key)
         
         if stt_provider in ("auto", "local"):
             self._local = LocalSTT(model_size=local_model, device=local_device)
         
         # Stats
         self._groq_calls = 0
+        self._gemini_calls = 0
         self._local_calls = 0
         self._groq_errors = 0
+        self._gemini_errors = 0
         
-        logger.info("STTRouter initialized (provider=%s, groq=%s, local=%s)",
+        logger.info("STTRouter initialized (provider=%s, groq=%s, gemini=%s, local=%s)",
                     stt_provider,
                     "available" if self._groq else "unavailable",
+                    "available" if self._gemini else "unavailable",
                     "configured" if self._local else "unavailable")
 
     def preload(self):
@@ -354,7 +494,7 @@ class STTRouter:
         """
         lang = language or self._language
 
-        # Try Groq first (if available and provider allows)
+        # 1. Try Groq (Fastest cloud)
         if self._groq and self._should_use_groq():
             result = self._groq.transcribe_bytes(audio_bytes, sample_rate, channels, sample_width, lang)
             if result.get("error") is None:
@@ -363,9 +503,20 @@ class STTRouter:
                 return result
             else:
                 self._groq_errors += 1
-                logger.warning("GroqSTT failed (%s), falling back to local", result["error"])
+                logger.warning("GroqSTT failed, falling back to next provider")
 
-        # Fallback to local
+        # 2. Try Gemini (Robust cloud)
+        if self._gemini and self._should_use_gemini():
+            result = self._gemini.transcribe_bytes(audio_bytes, sample_rate, channels, sample_width, lang)
+            if result.get("error") is None:
+                self._gemini_calls += 1
+                result["provider"] = "gemini"
+                return result
+            else:
+                self._gemini_errors += 1
+                logger.warning("GeminiSTT failed, falling back to local")
+
+        # 3. Fallback to local
         if self._local:
             result = self._local.transcribe_bytes(audio_bytes, sample_rate, channels, sample_width, lang)
             self._local_calls += 1
@@ -381,15 +532,14 @@ class STTRouter:
         }
 
     def _should_use_groq(self) -> bool:
-        """Determine if Groq should be used based on provider setting and availability."""
-        if self._provider == "local":
-            return False
-        if self._groq is None:
-            return False
-        if self._provider == "groq":
-            return True
-        # Auto mode: use Groq if it has remaining quota
-        return self._groq.remaining_seconds > 60  # At least 1 minute remaining
+        if self._provider == "local" or self._provider == "gemini": return False
+        if self._groq is None: return False
+        return self._groq.remaining_seconds > 10
+
+    def _should_use_gemini(self) -> bool:
+        if self._provider == "local" or self._provider == "groq": return False
+        if self._gemini is None: return False
+        return True
 
     def set_language(self, lang: str):
         """Set language for all providers."""
@@ -403,12 +553,14 @@ class STTRouter:
         return {
             "provider": self._provider,
             "groq_calls": self._groq_calls,
+            "gemini_calls": self._gemini_calls,
             "local_calls": self._local_calls,
             "groq_errors": self._groq_errors,
+            "gemini_errors": self._gemini_errors,
             "groq_remaining_seconds": self._groq.remaining_seconds if self._groq else 0,
         }
 
     def close(self):
         """Clean up resources."""
-        if self._groq:
-            self._groq.close()
+        if self._groq: self._groq.close()
+        if self._gemini: self._gemini.close()

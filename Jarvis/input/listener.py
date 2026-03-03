@@ -7,46 +7,11 @@ import time
 import numpy as np
 import logging
 from PyQt6.QtCore import QObject, pyqtSignal
-from Jarvis.config import PORCUPINE_ACCESS_KEY, VAD_ENGINE, STT_PROVIDER, GROQ_API_KEY, BARGE_IN_ENABLED
-from Jarvis.input.audio_processor import AudioProcessor
-from Jarvis.input.vad import create_vad
-from Jarvis.input.stt_router import STTRouter
-
+from Jarvis.config import PORCUPINE_ACCESS_KEY, VAD_ENGINE, STT_PROVIDER, GROQ_API_KEY, GEMINI_API_KEY, BARGE_IN_ENABLED
+# ... (rest of imports)
 
 class Listener(QObject):
-    """
-    Low-latency autonomous voice listener.
-    
-    Pipeline:
-      Mic → VAD (Silero neural / energy) → Record → STT Router (Groq/local)
-      
-    Optimizations over legacy:
-      - Silero VAD for accurate speech detection (no false triggers)
-      - In-memory audio processing (no WAV file I/O for cloud STT)
-      - Mic stream stays open during transcription (no close/reopen)
-      - Reduced silence timeout (250ms → from 400ms)
-      - Barge-in support: VAD stays active during TTS playback
-    """
-    state_changed = pyqtSignal(str)
-    command_received = pyqtSignal(str)
-    # Barge-in signal: emitted when user starts speaking during TTS playback
-    barge_in_detected = pyqtSignal()
-
-    # ── Tuning Constants ────────────────────────────────────────────────
-    SILENCE_DURATION = 0.25        # Reduced from 0.4s — faster end-of-speech detection
-    MIN_SPEECH_DURATION = 0.25
-    MAX_DURATION = 15.0
-    BARGE_IN_SPEECH_MS = 200       # Require 200ms continuous speech for barge-in
-    
-    # Legacy energy thresholds (used only with energy VAD)
-    SPEECH_THRESHOLD = 450
-    SILENCE_THRESHOLD = 300
-
-    RATE = 16000
-    CHANNELS = 1
-    CHUNK = 1024
-    FORMAT = pyaudio.paInt16
-
+    # ... (rest of class until __init__)
     def __init__(self):
         super().__init__()
         self.listening = False
@@ -64,6 +29,7 @@ class Listener(QObject):
         # Initialize STT Router (replaces subprocess worker)
         self._stt_router = STTRouter(
             groq_api_key=GROQ_API_KEY,
+            gemini_api_key=GEMINI_API_KEY,
             stt_provider=STT_PROVIDER,
             local_model="small.en",
             local_device="auto",

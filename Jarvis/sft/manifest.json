@@ -1,0 +1,15 @@
+{
+  "files": {
+    "Jarvis\\sft\\train.jsonl": {
+      "hash": "cdeeeef05be49c8af8b2ab59712a24c3b8ab6c1c70e639d2bdd9b8cf82fe36cd",
+      "updated_at": "2026-03-03T05:51:32.414285",
+      "size_bytes": 24415
+    },
+    "Jarvis\\sft\\train_chat.jsonl": {
+      "hash": "dddbac0dbde026ab033644e3849f177cea47e9ae21a8951fc8eb2068addf7a17",
+      "updated_at": "2026-03-03T05:51:32.528650",
+      "size_bytes": 87332
+    }
+  },
+  "last_run": "2026-03-03T05:51:32.528650"
+}

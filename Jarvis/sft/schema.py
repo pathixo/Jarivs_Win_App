@@ -24,6 +24,8 @@ class Scenario(str, Enum):
     MIXED           = "mixed"              # conversation + action
     MALFORMED       = "malformed_recovery" # model should NOT output broken tags
     MULTI_ACTION    = "multi_action"       # multiple tags in one response
+    MULTI_TURN      = "multi_turn"         # 2-3 turn follow-up conversations
+    HINDI_HINGLISH  = "hindi_hinglish"     # bilingual/code-switched examples
 
 
 class RiskLabel(str, Enum):
@@ -184,6 +186,7 @@ def validate_jsonl(filepath: str) -> tuple[int, int, list[ValidationError]]:
     all_errors = []
     total = 0
     valid = 0
+    seen_ids: dict[str, int] = {}  # id -> first line number where it appeared
 
     with open(filepath, "r", encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
@@ -195,6 +198,16 @@ def validate_jsonl(filepath: str) -> tuple[int, int, list[ValidationError]]:
                 ex = SFTExample.from_dict(data)
                 errs = validate_example(ex)
                 total += 1
+
+                # Cross-file duplicate ID check
+                if ex.id in seen_ids:
+                    errs.append(ValidationError(
+                        ex.id, "id",
+                        f"Duplicate ID (first seen on line {seen_ids[ex.id]}, repeated on line {line_num})"
+                    ))
+                else:
+                    seen_ids[ex.id] = line_num
+
                 if not errs:
                     valid += 1
                 else:

@@ -2,7 +2,9 @@ PyQt6
 PyQt6-WebEngine
 requests
 httpx[http2]
-faster-whisper
+faster-whisper==1.2.1
+torch==2.5.1
+transformers>=4.44.2
 edge-tts
 kokoro-onnx
 onnxruntime
@@ -13,3 +15,4 @@ colorama
 pyaudio
 psutil>=5.9.0
 silero-vad
+duckduckgo-search
