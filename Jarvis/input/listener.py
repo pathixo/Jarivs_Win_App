@@ -8,10 +8,28 @@ import numpy as np
 import logging
 from PyQt6.QtCore import QObject, pyqtSignal
 from Jarvis.config import PORCUPINE_ACCESS_KEY, VAD_ENGINE, STT_PROVIDER, GROQ_API_KEY, GEMINI_API_KEY, BARGE_IN_ENABLED
-# ... (rest of imports)
+from Jarvis.input.vad import create_vad
+from Jarvis.input.stt_router import STTRouter
+from Jarvis.input.audio_processor import AudioProcessor
 
 class Listener(QObject):
-    # ... (rest of class until __init__)
+    """Autonomous voice listener with VAD, STT routing, and barge-in support."""
+
+    # ── Qt Signals ───────────────────────────────────────────────────────────
+    command_received  = pyqtSignal(str)   # Emitted with transcribed text
+    state_changed     = pyqtSignal(str)   # "listening" | "processing" | "waiting" | "paused"
+    barge_in_detected = pyqtSignal()      # User spoke during TTS playback
+
+    # ── Audio Constants ──────────────────────────────────────────────────────
+    FORMAT             = pyaudio.paInt16
+    CHANNELS           = 1
+    RATE               = 16000           # 16 kHz — standard for Whisper
+    CHUNK              = 512             # 32ms at 16 kHz (Silero VAD optimal)
+    MAX_DURATION       = 30.0            # Max recording length (seconds)
+    MIN_SPEECH_DURATION = 0.3            # Ignore clips shorter than this
+    SILENCE_DURATION   = 0.8            # Silence before ending recording
+    BARGE_IN_SPEECH_MS = 300            # ms of sustained speech to trigger barge-in
+
     def __init__(self):
         super().__init__()
         self.listening = False
@@ -270,14 +288,6 @@ class Listener(QObject):
                     return
             else:
                 self._barge_in_speech_start = None
-
-        except Exception:
-            time.sleep(0.05)
-
-                except Exception as e:
-                    if "Input overflow" not in str(e):
-                        print(f"Listen loop error: {e}")
-                    time.sleep(0.05)
 
         except Exception as e:
             print(f"Listener CRITICAL: {e}")

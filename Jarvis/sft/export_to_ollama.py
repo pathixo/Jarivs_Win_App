@@ -66,44 +66,45 @@ def merge_lora(base_model: str, lora_path: str, output_path: str):
     return output_path
 
 
+def _install_gguf_deps():
+    """Install only the minimal deps for GGUF conversion — NEVER touch torch.
+    
+    llama.cpp's requirements.txt pulls in CPU-only torch and dozens of
+    unrelated packages (benchmarks, tool_bench, etc.).  We only need the
+    ``gguf`` Python package plus a few lightweight helpers that are
+    almost certainly already installed (numpy, sentencepiece, safetensors).
+    """
+    minimal_deps = [
+        "gguf>=0.1.0",
+        "sentencepiece>=0.1.98",
+        "numpy>=1.26",
+    ]
+    print("  Installing minimal GGUF conversion deps (torch NOT touched)...")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--no-deps", *minimal_deps],
+        check=True,
+        timeout=120,
+    )
+    # Also ensure gguf's own deps are satisfied
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "gguf>=0.1.0"],
+        check=True,
+        timeout=120,
+    )
+
+
 def convert_to_gguf(merged_path: str, gguf_output: str, quantize_type: str = "q4_K_M"):
     """Convert HuggingFace model to GGUF format using llama.cpp."""
     # Check if llama.cpp convert script exists
     convert_script = Path("llama.cpp/convert_hf_to_gguf.py")
 
     if not convert_script.exists():
-        print("\nllama.cpp not found. Cloning...")
+        print("\nllama.cpp not found. Cloning (shallow)...")
         subprocess.run(
-            ["git", "clone", "https://github.com/ggerganov/llama.cpp.git"],
+            ["git", "clone", "--depth", "1", "https://github.com/ggerganov/llama.cpp.git"],
             check=True,
         )
-        
-        # Filter out torch from requirements.txt (more robust)
-        req_path = Path("llama.cpp/requirements.txt")
-        if req_path.exists():
-            reqs = req_path.read_text(encoding="utf-8").splitlines()
-            # Skip commented lines and torch packages
-            reqs = [r for r in reqs if r.strip() and not r.strip().startswith("#")]
-            reqs = [r for r in reqs if not r.lower().strip().startswith("torch")]
-            req_path.write_text("\n".join(reqs) + "\n", encoding="utf-8")
-
-        # Install with retry logic for robustness
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-r", "llama.cpp/requirements.txt"],
-                    check=True,
-                    timeout=300,
-                )
-                break
-            except subprocess.CalledProcessError as e:
-                if attempt < max_retries - 1:
-                    print(f"Pip install failed (attempt {attempt + 1}/{max_retries}), retrying in 5s...")
-                    time.sleep(5)
-                else:
-                    print(f"Pip install failed after {max_retries} attempts")
-                    raise
+        _install_gguf_deps()
 
     # Convert to f16 GGUF first
     gguf_f16 = str(gguf_output).replace(".gguf", "_f16.gguf")

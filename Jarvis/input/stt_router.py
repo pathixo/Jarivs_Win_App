@@ -181,10 +181,6 @@ class GroqSTT:
             pass
 
 
-class GroqSTT:
-    # ... existing GroqSTT implementation ...
-    pass # (placeholder for original code, replacing only relevant parts)
-
 class GeminiSTT:
     """
     Google Gemini 1.5 Flash for high-quality audio transcription.
@@ -457,7 +453,11 @@ class STTRouter:
         if gemini_api_key and stt_provider in ("auto", "gemini"):
             self._gemini = GeminiSTT(gemini_api_key)
         
-        if stt_provider in ("auto", "local"):
+        # Local STT: only initialise if explicitly requested OR if no cloud providers are available.
+        # In "auto" mode, we only load local as a lazy fallback — not on startup — to avoid
+        # the faster-whisper/torch crash on systems with mismatched CUDA libraries.
+        _has_cloud = bool(self._groq or self._gemini)
+        if stt_provider == "local" or (stt_provider == "auto" and not _has_cloud):
             self._local = LocalSTT(model_size=local_model, device=local_device)
         
         # Stats
@@ -474,8 +474,8 @@ class STTRouter:
                     "configured" if self._local else "unavailable")
 
     def preload(self):
-        """Pre-load local model in background (call on startup)."""
-        if self._local:
+        """Pre-load local model in background. Only runs in explicit 'local' mode."""
+        if self._local and self._provider == "local":
             import threading
             threading.Thread(target=self._local.load_model, daemon=True).start()
 
