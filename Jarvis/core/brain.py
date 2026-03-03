@@ -14,6 +14,7 @@ provider failover, latency-aware routing, and structured settings management.
 import logging
 import json
 import os
+import queue
 import re
 import sqlite3
 import time
@@ -455,6 +456,7 @@ class _GeminiBackend:
         try:
             url = f"{self.BASE_URL}?key={self._api_key}"
             client = _get_http_client("gemini", 10.0)
+            r = client.get(url)
             r.raise_for_status()
             models = r.json().get("models", [])
             names = [m.get("name", "").replace("models/", "") for m in models]
@@ -752,7 +754,15 @@ class Brain:
         r"\b(plan|summarize|evaluate|critique)\b",
     ]
 
-    def generate_response_stream(self, text: str, history: list[dict] | None = None):
+    def generate_response_stream(
+        self,
+        text: str,
+        history: list[dict] | None = None,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+        system_prompt_override: str | None = None,
+        skip_memory: bool = False,
+    ):
         """
         Yield LLM tokens as they arrive (streaming) with a 'Fast-Switch' mechanism.
 
@@ -761,6 +771,9 @@ class Brain:
           2. If primary is 'ollama' and it takes > 4s for the first token,
              transparently parallelize/failover to Groq or Gemini.
           3. This ensures zero 'bugging' or silence for the user.
+
+        Override args let the Orchestrator force a specific provider/model
+        for hybrid processing (e.g. local model for actions, cloud for chat).
         """
         if not text or not text.strip():
             return
@@ -768,22 +781,32 @@ class Brain:
         conv_history = history if history is not None else self.memory.get_history()
         augmented_settings = self._get_augmented_settings()
 
-        # 1. Select initial provider
-        selected_provider = self.provider_router.select_provider(
-            text.strip(), preferred=augmented_settings.provider
-        )
-        if selected_provider != augmented_settings.provider:
-            logger.info("ProviderRouter routed: %s → %s", augmented_settings.provider, selected_provider)
-            augmented_settings.provider = selected_provider
-            augmented_settings.model = self._default_model_for(selected_provider)
+        # Apply overrides (hybrid orchestration)
+        if provider_override:
+            augmented_settings.provider = provider_override
+            augmented_settings.model = model_override or self._default_model_for(provider_override)
+        if model_override:
+            augmented_settings.model = model_override
+        if system_prompt_override:
+            augmented_settings.system_prompt = system_prompt_override
+
+        # 1. Select initial provider (skip if overridden)
+        if not provider_override:
+            selected_provider = self.provider_router.select_provider(
+                text.strip(), preferred=augmented_settings.provider
+            )
+            if selected_provider != augmented_settings.provider:
+                logger.info("ProviderRouter routed: %s → %s", augmented_settings.provider, selected_provider)
+                augmented_settings.provider = selected_provider
+                augmented_settings.model = self._default_model_for(selected_provider)
 
         # 2. Adaptive max_tokens
         augmented_settings.max_tokens = self.provider_router.get_max_tokens_for_query(
             text.strip(), augmented_settings.max_tokens
         )
 
-        # 3. Model auto-selection for Ollama
-        if OLLAMA_AUTO_SELECT and augmented_settings.provider == "ollama":
+        # 3. Model auto-selection for Ollama (skip if overridden)
+        if not model_override and OLLAMA_AUTO_SELECT and augmented_settings.provider == "ollama":
             augmented_settings.model = self._select_model_for_query(text.strip())
 
         # 4. Execute stream with Smart Switch (Race/Timeout)
@@ -857,7 +880,7 @@ class Brain:
             logger.error("Global stream error: %s", e, exc_info=True)
             yield f"I'm afraid I encountered a technical error: {e}"
 
-        if full_response:
+        if full_response and not skip_memory:
             self.memory.add("user", text.strip())
             self.memory.add("assistant", full_response)
 
@@ -887,10 +910,21 @@ class Brain:
                 continue
         return None
 
-    def generate_response(self, text: str, history: list[dict] | None = None) -> str:
+    def generate_response(
+        self,
+        text: str,
+        history: list[dict] | None = None,
+        provider_override: str | None = None,
+        model_override: str | None = None,
+        system_prompt_override: str | None = None,
+        skip_memory: bool = False,
+    ) -> str:
         """
         Generate an LLM response with retry + optional failover.
         Stores conversation in memory for multi-turn context.
+
+        Override args let the Orchestrator force a specific provider/model
+        for hybrid processing (e.g. local model for actions, cloud for chat).
         """
         if not text or not text.strip():
             return ""
@@ -899,14 +933,24 @@ class Brain:
         conv_history = history if history is not None else self.memory.get_history()
         augmented_settings = self._get_augmented_settings()
 
-        # Use ProviderRouter for intelligent provider selection
-        selected_provider = self.provider_router.select_provider(
-            text.strip(), preferred=augmented_settings.provider
-        )
-        if selected_provider != augmented_settings.provider:
-            logger.info("ProviderRouter routed: %s → %s", augmented_settings.provider, selected_provider)
-            augmented_settings.provider = selected_provider
-            augmented_settings.model = self._default_model_for(selected_provider)
+        # Apply overrides (hybrid orchestration)
+        if provider_override:
+            augmented_settings.provider = provider_override
+            augmented_settings.model = model_override or self._default_model_for(provider_override)
+        if model_override:
+            augmented_settings.model = model_override
+        if system_prompt_override:
+            augmented_settings.system_prompt = system_prompt_override
+
+        # Use ProviderRouter for intelligent provider selection (skip if overridden)
+        if not provider_override:
+            selected_provider = self.provider_router.select_provider(
+                text.strip(), preferred=augmented_settings.provider
+            )
+            if selected_provider != augmented_settings.provider:
+                logger.info("ProviderRouter routed: %s → %s", augmented_settings.provider, selected_provider)
+                augmented_settings.provider = selected_provider
+                augmented_settings.model = self._default_model_for(selected_provider)
 
         provider_enum = Provider(augmented_settings.provider)
         backend = self._backends[provider_enum]
@@ -924,9 +968,10 @@ class Brain:
                     augmented_settings.provider, augmented_settings.model, elapsed, len(response),
                 )
 
-                # Store in memory
-                self.memory.add("user", text.strip())
-                self.memory.add("assistant", response)
+                # Store in memory (skip for internal processing calls)
+                if not skip_memory:
+                    self.memory.add("user", text.strip())
+                    self.memory.add("assistant", response)
 
                 return response
 

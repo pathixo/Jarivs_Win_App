@@ -118,17 +118,28 @@ class TTS(QObject):
         """Return the current TTS voice ID."""
         return self._voice
 
-    def set_language_mode(self, mode: str) -> None:
+    def set_language_mode(self, mode: str) -> bool:
         """
-        Set TTS language mode.
-        mode: 'auto' (detect per-text), 'en' (always English), 'hi' (always Hindi)
+        Set TTS language mode (Hindi/English only).
+        
+        Args:
+            mode: 'auto' (detect per-text), 'en' (always English), 'hi' (always Hindi)
+            
+        Returns:
+            True if language set successfully, False if unsupported
         """
-        self._language_mode = mode.lower()
-        if mode == "hi":
+        mode_lower = mode.lower()
+        if mode_lower not in ("auto", "en", "hi"):
+            logger.warning("Unsupported language mode: %s. Only 'auto', 'en', 'hi' supported.", mode)
+            return False
+        
+        self._language_mode = mode_lower
+        if mode_lower == "hi":
             self._voice = VOICE_HINDI
-        elif mode == "en":
+        elif mode_lower == "en":
             self._voice = VOICE_ENGLISH
-        logger.info("TTS language mode set to: %s", mode)
+        logger.info("TTS language mode set to: %s", mode_lower)
+        return True
 
     @staticmethod
     def _detect_script(text: str) -> str:

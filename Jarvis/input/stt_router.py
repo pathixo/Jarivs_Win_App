@@ -102,8 +102,20 @@ class GroqSTT:
             "model": self._model,
             "response_format": "json",
         }
-        if language and language != "auto":
-            data["language"] = language
+        
+        # Groq expects ISO 639-1 language codes (e.g., "en", "hi", "es")
+        # Don't send language if it's "auto" or None
+        if language and language not in ("auto", "unknown"):
+            # Map common names to ISO 639-1 codes
+            lang_map = {
+                "en": "en", "english": "en", "eng": "en",
+                "hi": "hi", "hindi": "hi", "hin": "hi",
+                "es": "es", "spanish": "es", "spa": "es",
+                "fr": "fr", "french": "fr", "fra": "fr",
+            }
+            groq_lang = lang_map.get(language.lower(), language.lower()[:2])  # Use first 2 chars as fallback
+            if len(groq_lang) == 2:  # Only send valid ISO 639-1 codes
+                data["language"] = groq_lang
 
         try:
             if self._use_httpx:
@@ -126,7 +138,7 @@ class GroqSTT:
             with self._lock:
                 self._daily_seconds_used += audio_duration
 
-            logger.info("GroqSTT: '%s' (%.3fs, %.1fs audio)", text[:50], elapsed, audio_duration)
+            logger.info("GroqSTT: '%s' (%.3fs, %.1fs audio, lang=%s)", text[:50], elapsed, audio_duration, language)
             return {
                 "text": text,
                 "error": None,
@@ -136,10 +148,18 @@ class GroqSTT:
 
         except Exception as e:
             elapsed = round(time.time() - t0, 3)
-            logger.error("GroqSTT error: %s (%.3fs)", e, elapsed)
+            error_str = str(e)
+            
+            # Log more details for 400 Bad Request (usually language-related)
+            if "400" in error_str:
+                logger.warning("GroqSTT 400 Bad Request (language=%s): %s — retrying without language", language, e)
+                # Retry without language parameter
+                return self.transcribe_bytes(audio_bytes, sample_rate, channels, sample_width, language=None)
+            
+            logger.error("GroqSTT error: %s (%.3fs, lang=%s)", e, elapsed, language)
             return {
                 "text": "",
-                "error": str(e),
+                "error": error_str,
                 "time": elapsed,
                 "language": language or "auto",
             }
@@ -229,10 +249,13 @@ class GeminiSTT:
         # Base64 encode the WAV file
         audio_b64 = base64.b64encode(wav_buffer.read()).decode('utf-8')
         
-        # Prepare multimodal prompt
-        prompt = "Transcribe the audio exactly. Output ONLY the transcription text, no conversational filler or commentary. If there is no speech, output an empty string."
-        if language and language != "auto":
-            prompt = f"Transcribe the audio exactly in {language}. Output ONLY the transcription text."
+        # Prepare multimodal prompt - optimized for Hindi/English transcription
+        if language == "hi":
+            prompt = "Transcribe the audio exactly in Hindi (हिंदी). Output ONLY the transcribed text in Hindi. Do not translate, do not add commentary. If there is no speech, output an empty string."
+        elif language == "en":
+            prompt = "Transcribe the audio exactly in English. Output ONLY the transcribed text in English. Do not translate, do not add commentary. If there is no speech, output an empty string."
+        else:
+            prompt = "Transcribe the audio exactly. Output ONLY the transcription text, no conversational filler or commentary. If there is no speech, output an empty string."
 
         payload = {
             "contents": [{
@@ -431,11 +454,16 @@ class STTRouter:
       2. Gemini 1.5 Flash (secondary — ~300-500ms, multimodal robust)
       3. Local faster-whisper (fallback — ~300-800ms)
     
+    LANGUAGE RESTRICTION: Only Hindi (hi) and English (en) supported.
+    
     Automatically falls back when:
       - Primary providers are rate-limited or quota exhausted
       - Network unavailable
       - API returns error
     """
+    
+    # Only support Hindi and English
+    SUPPORTED_LANGUAGES = {"en", "hi", "auto"}
 
     def __init__(self, groq_api_key: str = "", gemini_api_key: str = "", 
                  stt_provider: str = "auto",
@@ -467,11 +495,12 @@ class STTRouter:
         self._groq_errors = 0
         self._gemini_errors = 0
         
-        logger.info("STTRouter initialized (provider=%s, groq=%s, gemini=%s, local=%s)",
+        logger.info("STTRouter initialized (provider=%s, groq=%s, gemini=%s, local=%s, languages=%s)",
                     stt_provider,
                     "available" if self._groq else "unavailable",
                     "available" if self._gemini else "unavailable",
-                    "configured" if self._local else "unavailable")
+                    "configured" if self._local else "unavailable",
+                    sorted(self.SUPPORTED_LANGUAGES))
 
     def preload(self):
         """Pre-load local model in background. Only runs in explicit 'local' mode."""
@@ -541,12 +570,25 @@ class STTRouter:
         if self._gemini is None: return False
         return True
 
-    def set_language(self, lang: str):
-        """Set language for all providers."""
+    def set_language(self, lang: str) -> bool:
+        """
+        Set language for all providers (Hindi/English only).
+        
+        Args:
+            lang: "en", "hi", or "auto"
+            
+        Returns:
+            True if language set successfully, False if unsupported
+        """
+        if lang not in self.SUPPORTED_LANGUAGES:
+            logger.warning("Unsupported language: %s. Only %s supported.", lang, self.SUPPORTED_LANGUAGES)
+            return False
+        
         self._language = lang if lang != "auto" else None
         if self._local:
             self._local.set_language(lang)
         logger.info("STTRouter language set to: %s", lang)
+        return True
 
     def get_stats(self) -> dict:
         """Return usage statistics."""

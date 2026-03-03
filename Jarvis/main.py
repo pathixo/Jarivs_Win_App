@@ -5,7 +5,8 @@ import logging
 import traceback
 
 # Silence FFmpeg / QtMultimedia logs via env vars (must be before any Qt/Multimedia imports)
-os.environ["QT_LOGGING_RULES"] = "qt.multimedia.ffmpeg.debug=false;qt.multimedia.ffmpeg.warning=false"
+os.environ["QT_LOGGING_RULES"] = "qt.multimedia.ffmpeg.debug=false;qt.multimedia.ffmpeg.warning=false;qt.multimedia.ffmpeg.info=false"
+os.environ["FFREPORT"] = "file=/dev/null"  # Suppress FFmpeg report generation
 
 # Add parent directory to sys.path FIRST (before any Jarvis imports)
 current_dir = os.path.dirname(os.path.abspath(__file__))

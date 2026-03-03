@@ -11,6 +11,7 @@ from Jarvis.config import PORCUPINE_ACCESS_KEY, VAD_ENGINE, STT_PROVIDER, GROQ_A
 from Jarvis.input.vad import create_vad
 from Jarvis.input.stt_router import STTRouter
 from Jarvis.input.audio_processor import AudioProcessor
+from Jarvis.core.language_detector import LanguageDetector
 
 class Listener(QObject):
     """Autonomous voice listener with VAD, STT routing, and barge-in support."""
@@ -40,6 +41,10 @@ class Listener(QObject):
         self._is_tts_playing = False   # Track TTS playback state for barge-in
         self._pa = None
         self._stream = None
+        
+        # Language detection and context tracking
+        self._language_detector = LanguageDetector()
+        self._last_detected_language = None  # Remember last detected language for STT
         
         # Initialize VAD engine
         self._vad = create_vad(VAD_ENGINE)
@@ -161,13 +166,18 @@ class Listener(QObject):
         
         audio_duration = len(audio_bytes) / (self.RATE * self.CHANNELS * sample_width)
         print(f"[STT] Transcribing {audio_duration:.1f}s audio ({len(audio_bytes)} bytes)...")
-
-        # Use STT Router instead of subprocess worker
+        
+        # Try to detect language from context (use last detected language as hint)
+        # This helps with consecutive Hindi/English utterances
+        stt_language = self._last_detected_language or None
+        
+        # Use STT Router with language hint
         result = self._stt_router.transcribe(
             audio_bytes=audio_bytes,
             sample_rate=self.RATE,
             channels=self.CHANNELS,
             sample_width=sample_width,
+            language=stt_language,  # Pass detected language hint
         )
 
         total = time.time() - t_start
@@ -175,12 +185,17 @@ class Listener(QObject):
         provider = result.get("provider", "unknown")
         stt_time = result.get("time", 0)
         error = result.get("error")
+        detected_lang = result.get("language", "auto")
 
         if error:
             print(f"[STT] Error ({provider}): {error}")
             return
 
-        print(f"[STT] '{text}' ({provider}, stt={stt_time}s, total={total:.2f}s)")
+        # Remember the detected language for next transcription
+        if detected_lang and detected_lang != "auto":
+            self._last_detected_language = detected_lang
+
+        print(f"[STT] '{text}' ({provider}, stt={stt_time}s, total={total:.2f}s, lang={detected_lang})")
 
         if text and len(text) > 2:
             print(f">>> COMMAND: {text}")

@@ -38,6 +38,7 @@ from Jarvis.core.intent_engine import IntentEngine, IntentResult
 from Jarvis.config import (
     GROQ_API_KEY, GROQ_INTENT_MODEL,
     INTENT_ENGINE_ENABLED, INTENT_CONFIDENCE_THRESHOLD,
+    GEMINI_API_KEY, OLLAMA_MODEL,
 )
 
 logger = logging.getLogger("jarvis.orchestrator")
@@ -343,12 +344,13 @@ class Orchestrator:
                 print(clr.info(result))
                 return result
 
-            # 7. Direct app launch detection: "open spotify", "launch notepad"
-            app_match = re.search(r"^(open|launch|start|run)\s+([\w\s.-]+)$", command_text, re.IGNORECASE)
+            # 7. Direct app launch detection: "open spotify", "launch notepad", "can you open notepad"
+            # Improved regex: match verb-app patterns anywhere in sentence, not just at start
+            app_match = re.search(r"(?:can\s+you\s+)?(?:can\s+)?(?:please\s+)?(open|launch|start|run)\s+([\w\s.-]+?)(?:\s+(?:for\s+)?(?:me|please|now)|$)", command_text, re.IGNORECASE)
             if app_match:
                 app_name = app_match.group(2).strip()
                 # Sanitize: strip common conversational fluff
-                fluff = [r"\s+please\b", r"\s+thanks\b", r"\s+for me\b", r"\s+now\b", r"^\s+the\s+"]
+                fluff = [r"\s+please\b", r"\s+thanks\b", r"\s+for\s+me\b", r"\s+now\b", r"^\s+the\s+"]
                 for pat in fluff:
                     app_name = re.sub(pat, "", app_name, flags=re.IGNORECASE).strip()
 
@@ -456,6 +458,34 @@ class Orchestrator:
         """
         import datetime
         tl = text.strip().lower()
+
+        # ── 0. Math / Calculation — instant, from Python eval ────────────────
+        # "calculate 5+3", "what is 25*4", "how much is 15% of 200", etc.
+        calc_match = re.search(
+            r"(?:calculate|compute|eval(?:uate)?|solve)\s+(.+)",
+            tl, re.IGNORECASE
+        )
+        if not calc_match:
+            calc_match = re.search(
+                r"(?:what(?:'s| is)|how much is)\s+([\d][\d\s+\-*/^.%()\w]*)",
+                tl, re.IGNORECASE
+            )
+        if calc_match:
+            expr = calc_match.group(1).strip().rstrip("?.")
+            # Convert natural language operators
+            expr = expr.replace("^", "**").replace("×", "*").replace("÷", "/")
+            expr = re.sub(r"(\d+)\s*%\s*of\s*(\d+)", r"\1/100*\2", expr)
+            expr = re.sub(r"(\d+)\s+(?:times|x)\s+(\d+)", r"\1*\2", expr)
+            expr = re.sub(r"(\d+)\s+(?:plus|and)\s+(\d+)", r"\1+\2", expr)
+            expr = re.sub(r"(\d+)\s+(?:minus)\s+(\d+)", r"\1-\2", expr)
+            expr = re.sub(r"(\d+)\s+(?:divided by|over)\s+(\d+)", r"\1/\2", expr)
+            # Only bypass if expression looks mathematic (has digits + operators)
+            if re.search(r"\d", expr) and re.search(r"[+\-*/().]", expr):
+                result = self.tools.calculate(expr)
+                if not result.startswith("Error"):
+                    msg = f"The answer is {result}."
+                    clr.print_info(f"  Math bypass: {expr} = {result}")
+                    return msg
 
         # ── 1. Time / Date — instant, from Python datetime ──────────────────────
         if re.search(r"what('?s| is) (the )?(time|current time)", tl) or re.search(r"\btime( is it| now)?\b", tl):
@@ -641,6 +671,42 @@ class Orchestrator:
 
     # ── LLM Processing ──────────────────────────────────────────────────────
 
+    # System prompt for the local "Action Engine" (Phase 1)
+    _ACTION_ENGINE_PROMPT = (
+        "You are an action engine. Your ONLY job is to decide what to DO.\n"
+        "Analyze the user's request carefully.\n\n"
+        "RULES:\n"
+        "1. If the request needs a shell/terminal command, output ONLY:\n"
+        "   [SHELL]the exact command[/SHELL]\n"
+        "2. If it needs to open an app/URL/file, output ONLY:\n"
+        "   [ACTION]LAUNCH_APP:appname[/ACTION] or [ACTION]OPEN_URL:url[/ACTION]\n"
+        "3. If the request is a math calculation, output ONLY:\n"
+        "   [CALC]the mathematical expression[/CALC]\n"
+        "4. If the request is just conversation/question/chat, output ONLY:\n"
+        "   CONVERSATION\n\n"
+        "NEVER add explanation. NEVER add conversation. Output ONLY the tag or CONVERSATION.\n\n"
+        "Examples:\n"
+        "User: open notepad → [ACTION]LAUNCH_APP:notepad[/ACTION]\n"
+        "User: what's 25 * 4 → [CALC]25 * 4[/CALC]\n"
+        "User: list files in downloads → [SHELL]dir %USERPROFILE%\\Downloads[/SHELL]\n"
+        "User: how are you → CONVERSATION\n"
+        "User: open spotify → [ACTION]LAUNCH_APP:spotify[/ACTION]\n"
+        "User: what's the weather → CONVERSATION\n"
+        "User: create a folder called test → [SHELL]mkdir test[/SHELL]\n"
+        "User: open google chrome → [ACTION]LAUNCH_APP:chrome[/ACTION]\n"
+        "User: what is 2 to the power of 10 → [CALC]2**10[/CALC]\n"
+        "User: tell me a joke → CONVERSATION\n"
+        "User: run python script test.py → [SHELL]python test.py[/SHELL]\n"
+        "User: open calculator → [ACTION]LAUNCH_APP:calc[/ACTION]\n"
+        "User: open task manager → [ACTION]LAUNCH_APP:taskmgr[/ACTION]\n"
+        "User: open command prompt → [ACTION]LAUNCH_APP:cmd[/ACTION]\n"
+        "User: what's 15% of 230 → [CALC]0.15 * 230[/CALC]\n"
+        "User: search python tutorials → CONVERSATION\n"
+    )
+
+    # Regex to extract [CALC]...[/CALC] from action engine output
+    _CALC_TAG_RE = re.compile(r"\[CALC\](.*?)\[/CALC\]", re.IGNORECASE | re.DOTALL)
+
     def _process_with_llm(
         self,
         command_text: str,
@@ -650,13 +716,13 @@ class Orchestrator:
         intent: "IntentResult | None" = None,
     ) -> str:
         """
-        Send to Brain, stream/parse response, execute any [SHELL]/[ACTION] commands found.
+        Hybrid 2-Step Architecture:
+          Phase 1 (LOCAL):  Ask local Ollama model to classify + extract actions.
+          Phase 2 (EXECUTE): Run any [SHELL]/[ACTION]/[CALC] tags found.
+          Phase 3 (CLOUD):  Stream final conversational response from Gemini,
+                           enriched with execution results.
 
-        Optimized for LOW LATENCY:
-        - Starts speaking conversational acknowledgment as tokens arrive.
-        - Provides 'Thinking' fillers if the model is slow to respond.
-        - Notifies before/after execution.
-        - Injects structured intent analysis context when available.
+        If Gemini is unavailable, falls back to local model for conversation too.
         """
         t0 = time.time()
 
@@ -668,17 +734,100 @@ class Orchestrator:
                 self.brain.memory.add("system", note)
                 _injected_intent_note = True
 
-        # ── 1. Thinking Filler Logic ──
-        # If no tokens arrive within 600ms, say a filler to keep user engaged
+        # ════════════════════════════════════════════════════════════════════
+        #  PHASE 1: Local Action Classification (Ollama — fast, no internet)
+        # ════════════════════════════════════════════════════════════════════
+        action_response = ""
+        try:
+            clr.print_info("  [Phase 1] Local action analysis...")
+            action_response = self.brain.generate_response(
+                command_text,
+                history=[],  # No history needed for action classification
+                provider_override="ollama",
+                model_override=OLLAMA_MODEL,
+                system_prompt_override=self._ACTION_ENGINE_PROMPT,
+                skip_memory=True,  # Don't pollute conversation memory
+            )
+            logger.info("Action engine response: %s", action_response[:200])
+            clr.print_info(f"  [Phase 1] Result: {action_response.strip()[:120]}")
+        except Exception as e:
+            logger.warning("Phase 1 (local action) failed: %s", e)
+            action_response = "CONVERSATION"
+
+        # ════════════════════════════════════════════════════════════════════
+        #  PHASE 2: Execute any extracted actions
+        # ════════════════════════════════════════════════════════════════════
+        execution_results = []
+        is_action_request = False
+
+        # 2a. Extract [CALC] tags
+        calc_matches = self._CALC_TAG_RE.findall(action_response)
+        for expr in calc_matches:
+            is_action_request = True
+            clr.print_info(f"  [Calc] {expr.strip()}")
+            calc_result = self.tools.calculate(expr.strip())
+            execution_results.append(f"Calculation: {expr.strip()} = {calc_result}")
+            clr.print_info(f"  [Calc] Result: {calc_result}")
+
+        # 2b. Extract [SHELL] and [ACTION] tags using the existing filter
+        action_filter = _TagStreamFilter()
+        action_filter.feed(action_response)
+        action_filter.flush()
+
+        for action_str in action_filter.action_commands:
+            is_action_request = True
+            from Jarvis.core.system.action_router import parse_action_tag
+            action_req = parse_action_tag(action_str)
+            if action_req:
+                clr.print_info(f"  [Action] {action_req.action_type.value} -> {action_req.target}")
+                action_result = self.action_router.execute_action(action_req)
+                execution_results.append(f"Action ({action_req.action_type.value}): {action_result.message}")
+
+        for cmd in action_filter.shell_commands:
+            cmd = cmd.strip()
+            if not cmd:
+                continue
+            is_action_request = True
+            clr.print_shell(cmd)
+            self._speak_async("Running that now, sir.")
+            shell_output = self._execute_shell(cmd, from_llm=True)
+            execution_results.append(f"Shell `{cmd}`: {shell_output}")
+
+        # ════════════════════════════════════════════════════════════════════
+        #  PHASE 3: Conversational Response (Gemini preferred, local fallback)
+        # ════════════════════════════════════════════════════════════════════
+        # Build the prompt for the conversation model
+        if execution_results:
+            # Summarize what was done so the conversation model can describe it
+            exec_summary = "\n".join(execution_results)
+            conv_prompt = (
+                f"The user said: \"{command_text}\"\n\n"
+                f"I already performed these actions:\n{exec_summary}\n\n"
+                f"Now give a brief, natural conversational response confirming what was done. "
+                f"Be concise (1-2 sentences). Don't repeat the command verbatim."
+            )
+        else:
+            # Pure conversation — just pass the user's text
+            conv_prompt = command_text
+
+        # Decide conversation provider: Gemini if available, else local
+        conv_provider = "gemini" if GEMINI_API_KEY else None  # None = use default
+        conv_model = None  # Use provider default
+
+        # ── Filler Logic ──
         _first_token_received = threading.Event()
-        
+
         def _speak_filler():
             time.sleep(FILLER_TIMEOUT_S)
             if not _first_token_received.is_set():
                 import random
                 self._speak_async(random.choice(FILLER_PHRASES))
 
-        threading.Thread(target=_speak_filler, daemon=True).start()
+        # Only use filler for pure conversation (actions already gave feedback)
+        if not is_action_request:
+            threading.Thread(target=_speak_filler, daemon=True).start()
+        else:
+            _first_token_received.set()  # Skip filler
 
         if token_callback:
             # ── Streaming path (Preferred) ─────────────────────────────
@@ -687,43 +836,52 @@ class Orchestrator:
 
             stream_filter = _TagStreamFilter()
             llm_response = ""
-            
-            # Start UI block
+
             clr.print_ai_start()
             t_first_token = None
-            
-            # Collect visible tokens for eager sentence splitting
             _visible_tokens = []
-            
+
             try:
-                for token in self.brain.generate_response_stream(command_text):
+                for token in self.brain.generate_response_stream(
+                    conv_prompt,
+                    provider_override=conv_provider,
+                    model_override=conv_model,
+                ):
                     if not _first_token_received.is_set():
                         _first_token_received.set()
                         t_first_token = time.time()
                         logger.info("TTFT: %.0fms", (t_first_token - t0) * 1000)
-                        
+
                     llm_response += token
                     visible = stream_filter.feed(token)
-                    
+
                     if visible:
                         token_callback(visible)
                         clr.print_ai_token(visible)
                         _visible_tokens.append(visible)
 
             except Exception as e:
-                _first_token_received.set() # Ensure filler thread doesn't trigger late
-                return self._handle_processing_error(e, also_speak=True)
+                _first_token_received.set()
+                logger.warning("Gemini stream failed, falling back to local: %s", e)
+                # Fallback: try local model
+                try:
+                    llm_response = self.brain.generate_response(conv_prompt)
+                    if llm_response:
+                        token_callback(llm_response)
+                        clr.print_ai_token(llm_response)
+                        _visible_tokens.append(llm_response)
+                except Exception as e2:
+                    return self._handle_processing_error(e2, also_speak=True)
 
             remaining = stream_filter.flush()
             if remaining:
                 token_callback(remaining)
                 clr.print_ai_token(remaining)
                 _visible_tokens.append(remaining)
-            
+
             clr.print_ai_end()
 
             # ── Eager sentence flush for TTS ──
-            # Use the pipeline's sentence splitter on collected visible tokens
             def _token_iter():
                 for t in _visible_tokens:
                     yield t
@@ -733,81 +891,51 @@ class Orchestrator:
                 if sentence and len(sentence) > 3:
                     self._speak_async(sentence)
 
-            shell_commands = stream_filter.shell_commands
-            action_commands = stream_filter.action_commands
-            code_commands = stream_filter.code_commands
+            # Handle any residual shell/action tags from Gemini (unlikely but safe)
+            for cmd in stream_filter.shell_commands:
+                cmd = cmd.strip()
+                if cmd:
+                    clr.print_shell(cmd)
+                    shell_output = self._execute_shell(cmd, from_llm=True)
+                    self.brain.memory.add("system", f"Output of `{cmd}`:\n{shell_output}")
+
         else:
             # ── Non-streaming path ────────────────────────────────────
             _first_token_received.set()
-            llm_response = self.brain.generate_response(command_text)
-            action_reqs, shell_commands = extract_actions(llm_response)
-            action_commands = [req.raw_text for req in action_reqs]
-            code_commands = [req.target for req in action_reqs if req.action_type == ActionType.EXEC_CODE]
-            action_commands = [req.raw_text for req in action_reqs if req.action_type != ActionType.EXEC_CODE]
+            llm_response = self.brain.generate_response(
+                conv_prompt,
+                provider_override=conv_provider,
+                model_override=conv_model,
+            )
 
         elapsed = time.time() - t0
-        logger.info("LLM responded in %.2fs", elapsed)
+        logger.info("Hybrid pipeline completed in %.2fs", elapsed)
 
-        if not llm_response:
+        if not llm_response and not execution_results:
             return "I'm sorry, sir, I didn't get a response. Could you repeat that?"
 
-        # Conversational cleanup for return string
+        # Build final result
+        final_parts = []
+        if execution_results:
+            final_parts.extend(execution_results)
+
+        # Clean the conversational response
         from Jarvis.core.system.action_router import ACTION_TAG_PATTERN, SHELL_TAG_PATTERN, EXEC_CODE_TAG_PATTERN
-        clean_text = SHELL_TAG_PATTERN.sub('', llm_response)
-        clean_text = ACTION_TAG_PATTERN.sub('', clean_text)
-        clean_text = EXEC_CODE_TAG_PATTERN.sub('', clean_text).strip()
+        if llm_response:
+            clean_text = SHELL_TAG_PATTERN.sub('', llm_response)
+            clean_text = ACTION_TAG_PATTERN.sub('', clean_text)
+            clean_text = EXEC_CODE_TAG_PATTERN.sub('', clean_text).strip()
+            if clean_text:
+                if not token_callback:
+                    clr.print_ai(clean_text)
+                    self._speak_async(clean_text)
+                final_parts.append(clean_text)
 
-        if not shell_commands and not action_commands and not code_commands:
-            if not token_callback:
-                clr.print_ai(llm_response)
-                self._speak_async(llm_response)
-            return llm_response
+        # Store in memory
+        self.brain.memory.add("user", command_text)
+        self.brain.memory.add("assistant", llm_response or "\n".join(execution_results))
 
-        results = []
-        if clean_text:
-            if not token_callback:
-                clr.print_ai(clean_text)
-                self._speak_async(clean_text)
-            results.append(clean_text)
-
-        # ── Execution Phase ──
-        
-        # 1. Execute Actions
-        for action_str in action_commands:
-            from Jarvis.core.system.action_router import parse_action_tag
-            action_req = parse_action_tag(action_str)
-            if action_req:
-                clr.print_info(f"  Action: {action_req.action_type.value} -> {action_req.target}")
-                action_result = self.action_router.execute_action(action_req)
-                self.brain.memory.add("system", f"Action result: {action_result.message}")
-                results.append(action_result.message)
-
-        # 2. Execute Shell Commands
-        for cmd in shell_commands:
-            cmd = cmd.strip()
-            if not cmd: continue
-
-            # If it's a "heavy" command, notify the user
-            is_light = re.match(r"^(ls|dir|get-|type|cat|whoami|hostname|pwd|cd|ipconfig)\b", cmd, re.I)
-            if not is_light:
-                self._speak_async("Executing that command now, sir.")
-            
-            clr.print_shell(cmd)
-            shell_output = self._execute_shell(cmd, from_llm=True)
-            
-            # Feed back to memory
-            self.brain.memory.add("system", f"Output of `{cmd}`:\n{shell_output}")
-            
-            # Completion acknowledgment
-            if not is_light and "Error" not in shell_output and "Blocked" not in shell_output:
-                self._speak_async("Command finished.")
-
-            if shell_output and shell_output != "Command executed.":
-                results.append(f"Result of `{cmd}`:\n{shell_output}")
-            else:
-                results.append(f"Successfully executed `{cmd}`.")
-
-        return "\n".join(results)
+        return "\n".join(final_parts) if final_parts else (llm_response or "Done.")
 
     def _speak_async(self, text: str) -> None:
         """Helper to speak text via TTS in a background thread if available."""
@@ -1092,15 +1220,15 @@ class Orchestrator:
         return help_text
 
     def _handle_voice_command(self, command_text: str) -> str:
-        """Handle voice control commands."""
+        """Handle voice control commands (Hindi/English only)."""
 
         help_text = (
-            "Voice Controls:\n"
+            "Voice Controls (Hindi/English only):\n"
             "-----------------------------------\n"
             "  voice set <voice_id>  - Set TTS voice manually\n"
             "  voice list            - Show recommended voices\n"
             "  voice status          - Show current voice\n"
-            "  voice language <lang> - Set TTS language mode (auto/hindi/english)\n"
+            "  voice language <lang> - Set TTS language mode (auto/hi/en only)\n"
         )
 
         # voice help
@@ -1135,7 +1263,7 @@ class Orchestrator:
                 )
             return "TTS not available."
 
-        # voice language <lang>
+        # voice language <lang> - RESTRICTED TO EN/HI
         lang_match = re.search(r"^voice\s+language\s+(.+)$", command_text, re.IGNORECASE)
         if lang_match:
             lang = lang_match.group(1).strip().lower()
@@ -1143,12 +1271,18 @@ class Orchestrator:
                 mode = "hi"
             elif lang in ["english", "en"]:
                 mode = "en"
-            else:
+            elif lang in ["auto"]:
                 mode = "auto"
+            else:
+                return (f"Error: Unsupported language '{lang}'. "
+                       "Only 'auto', 'en' (English), or 'hi' (Hindi) supported.\n"
+                       "Supported languages: en (English), hi (Hindi), auto (auto-detect)")
             
             if self.tts:
-                self.tts.set_language_mode(mode)
-                return f"Voice language mode set to '{mode}'."
+                if self.tts.set_language_mode(mode):
+                    return f"Voice language mode set to '{mode}'."
+                else:
+                    return f"Error: Failed to set language mode to '{mode}'."
             return "TTS not available."
 
         return help_text
@@ -1182,12 +1316,12 @@ class Orchestrator:
     }
 
     def _handle_stt_command(self, command_text: str) -> str:
-        """Handle STT language switching commands."""
+        """Handle STT language switching commands (Hindi/English only)."""
 
         help_text = (
-            "STT Controls:\n"
+            "STT Controls (Hindi/English only):\n"
             "-----------------------------------\n"
-            "  stt language <lang>   - Set STT language (auto/hindi/english/...)\n"
+            "  stt language <lang>   - Set STT language (auto/hi/en only)\n"
             "  stt language status   - Show current STT language\n"
             "  stt language list     - Show supported languages\n"
         )
@@ -1202,19 +1336,29 @@ class Orchestrator:
 
         # stt language list
         if re.search(r"^stt\s+language\s+list$", command_text, re.IGNORECASE):
-            langs = sorted(set(self.LANGUAGE_ALIASES.values()))
-            names = []
-            for code in langs:
-                # Find the human-readable name for this code
-                name = next((k for k, v in self.LANGUAGE_ALIASES.items() if v == code and len(k) > 2), code)
-                names.append(f"  - {name} ({code})")
-            return "Supported STT Languages:\n" + "\n".join(names)
+            return (
+                "Supported STT Languages (Restricted):\n"
+                "  - auto (auto-detect between en/hi)\n"
+                "  - en (English)\n"
+                "  - hi (Hindi)"
+            )
 
-        # stt language <lang>
+        # stt language <lang> - RESTRICTED TO EN/HI
         lang_match = re.search(r"^stt\s+language\s+(.+)$", command_text, re.IGNORECASE)
         if lang_match:
             lang_input = lang_match.group(1).strip().lower()
-            lang_code = self.LANGUAGE_ALIASES.get(lang_input, lang_input)
+            
+            # Normalize to ISO 639-1 codes
+            if lang_input in ["hindi", "hi"]:
+                lang_code = "hi"
+            elif lang_input in ["english", "en"]:
+                lang_code = "en"
+            elif lang_input in ["auto"]:
+                lang_code = "auto"
+            else:
+                return (f"Error: Unsupported language '{lang_input}'. "
+                       "Only 'auto', 'en' (English), or 'hi' (Hindi) supported.\n"
+                       "Use 'stt language list' to see supported languages.")
 
             # Send LANG command to the STT worker
             if self.listener and hasattr(self.listener, '_worker') and self.listener._worker:
@@ -1226,13 +1370,13 @@ class Orchestrator:
                     if response:
                         data = json.loads(response)
                         if data.get("status") == "lang_set":
-                            self._stt_language = lang_code if lang_code != "auto" else "auto"
-                            display = lang_input if lang_input in self.LANGUAGE_ALIASES else lang_code
+                            self._stt_language = lang_code
+                            display = lang_input if lang_input in ["english", "hindi", "en", "hi", "auto"] else lang_code
                             return f"STT language set to '{display}' ({lang_code}). Speak now!"
                 except Exception as e:
                     return f"Error setting STT language: {e}"
 
-            self._stt_language = lang_code if lang_code != "auto" else "auto"
+            self._stt_language = lang_code
             return f"STT language set to '{lang_code}' (will apply on next restart)."
 
         return help_text

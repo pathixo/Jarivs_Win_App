@@ -105,12 +105,12 @@ class SafePowerShellBuilder:
             ps_script = (
                 f"$exe = {sanitize_powershell_arg(exe_path)}; "
                 f"$args = @({args_str}); "
-                "Start-Process -FilePath $exe -ArgumentList $args -NoNewWindow"
+                "Start-Process -FilePath $exe -ArgumentList $args"
             )
         else:
             ps_script = (
                 f"$exe = {sanitize_powershell_arg(exe_path)}; "
-                "Start-Process -FilePath $exe -NoNewWindow"
+                "Start-Process -FilePath $exe"
             )
         
         return True, ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script], ""

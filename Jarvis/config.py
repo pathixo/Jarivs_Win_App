@@ -25,18 +25,20 @@ load_dotenv()
 
 # ─────────────────────── LLM Provider Config ────────────────────────────────
 # Active provider: "ollama" | "gemini" | "groq" | "grok"
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+# Default is "gemini" — conversation goes through Gemini API for quality.
+# Local Ollama is still used for action classification (hybrid mode).
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")
 
-# Ollama Configuration (Local Brain)
+# Ollama Configuration (Local Brain — used for action classification in hybrid mode)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma:2b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "jarvis-action")
 
 # Ollama Model Auto-Selection
 # When enabled, Jarvis picks the fast model for simple queries, the logic
 # model for complex reasoning, and the code model for programming tasks.
-OLLAMA_FAST_MODEL  = os.getenv("OLLAMA_FAST_MODEL",  "gemma:2b")              # speed
+OLLAMA_FAST_MODEL  = os.getenv("OLLAMA_FAST_MODEL",  "jarvis-action")          # speed
 OLLAMA_LOGIC_MODEL = os.getenv("OLLAMA_LOGIC_MODEL", "llama3.2:3b")           # reasoning
-OLLAMA_CODE_MODEL  = os.getenv("OLLAMA_CODE_MODEL",  "qwen2.5-coder:3b")     # coding
+OLLAMA_CODE_MODEL  = os.getenv("OLLAMA_CODE_MODEL",  "llama3.2:3b")           # coding
 OLLAMA_AUTO_SELECT = os.getenv("OLLAMA_AUTO_SELECT", "true").lower() == "true"
 
 # Gemini Configuration (Google Cloud)

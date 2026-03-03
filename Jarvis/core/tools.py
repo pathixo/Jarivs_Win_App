@@ -5,6 +5,7 @@ Implements workspace-sandboxed file system and command operations.
 Delegates all OS interactions through the SystemBackend abstraction.
 """
 
+import math
 import os
 from typing import Optional
 
@@ -95,3 +96,41 @@ class Tools:
         if result.success:
             return f"File '{filepath}' written successfully."
         return f"Error writing file: {result.error}"
+
+    def calculate(self, expression: str) -> str:
+        """
+        Safely evaluates a mathematical expression using Python's eval
+        with a restricted namespace (math functions only, no builtins).
+        """
+        # Whitelist: only math functions and safe builtins
+        allowed = {
+            "__builtins__": {},
+            "abs": abs, "round": round, "min": min, "max": max, "pow": pow,
+            "int": int, "float": float, "sum": sum, "len": len,
+            # math module functions
+            "sqrt": math.sqrt, "ceil": math.ceil, "floor": math.floor,
+            "log": math.log, "log10": math.log10, "log2": math.log2,
+            "sin": math.sin, "cos": math.cos, "tan": math.tan,
+            "asin": math.asin, "acos": math.acos, "atan": math.atan,
+            "pi": math.pi, "e": math.e, "inf": math.inf,
+            "degrees": math.degrees, "radians": math.radians,
+            "factorial": math.factorial, "gcd": math.gcd,
+        }
+        expression = (expression or "").strip()
+        if not expression:
+            return "Error: empty expression."
+        if len(expression) > 200:
+            return "Error: expression too long."
+        # Block dangerous patterns
+        if any(kw in expression for kw in ["import", "exec", "eval", "open", "__", "os.", "sys."]):
+            return "Error: disallowed keyword in expression."
+        try:
+            result = eval(expression, allowed, allowed)
+            # Format nicely
+            if isinstance(result, float) and result == int(result) and abs(result) < 1e15:
+                return str(int(result))
+            return str(result)
+        except ZeroDivisionError:
+            return "Error: division by zero."
+        except Exception as e:
+            return f"Error: {e}"
