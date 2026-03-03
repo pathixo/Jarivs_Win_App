@@ -15,7 +15,7 @@ Usage:
 Notes:
     - Requires a GPU with >= 4GB VRAM (QLoRA 4-bit)
     - Trains LoRA adapters only (~10-50MB), not the full model
-    - Output adapters saved to ./output/jarvis-gemma-lora/
+    - Output adapters saved to ./output/jarvis-qwen-lora/
     - Default batch_size=1 for 4GB GPUs; increase if you have more VRAM
     - --packing concatenates short sequences for GPU efficiency; most Jarvis
       examples are <200 tokens so packing can significantly improve throughput,
@@ -179,11 +179,7 @@ def train(args):
 
     # Format messages for training using tokenizer's chat template if available
     def format_messages(example):
-        """Convert chat messages to a single training string using ChatML format.
-
-        The ``id`` field is passed through so check_sequence_lengths() can
-        report which specific examples will be truncated.
-        """
+        """Convert chat messages to a single training string using ChatML format."""
         messages = example["messages"]
         # Try to use the tokenizer's built-in chat template
         if hasattr(tokenizer, 'apply_chat_template'):
@@ -206,7 +202,24 @@ def train(args):
 
     # Length-check pass: warn about examples that will be truncated
     print("Checking sequence lengths...")
-    check_sequence_lengths(dataset, tokenizer, args.max_length)
+    def check_sequence_lengths_internal(dataset, tokenizer, max_length: int) -> list[str]:
+        truncated_ids: list[str] = []
+        for i, example in enumerate(dataset):
+            text = example.get("text", "")
+            example_id = example.get("id") or f"idx_{i}"
+            token_ids = tokenizer.encode(text, add_special_tokens=False)
+            n_tokens = len(token_ids)
+            if n_tokens > max_length:
+                truncated_ids.append(example_id)
+                logger.warning("example '%s' will be truncated (%d tokens > max_length=%d)", 
+                               example_id, n_tokens, max_length)
+        if truncated_ids:
+            print(f"  [WARN] {len(truncated_ids)}/{len(dataset)} examples exceed max_length={max_length}")
+        else:
+            print(f"  [OK] All {len(dataset)} examples fit within max_length={max_length}")
+        return truncated_ids
+
+    check_sequence_lengths_internal(dataset, tokenizer, args.max_length)
 
     # Split into train/val
     split = dataset.train_test_split(test_size=0.1, seed=42)
@@ -214,7 +227,7 @@ def train(args):
     eval_dataset = split["test"]
     print(f"  Train: {len(train_dataset)}, Val: {len(eval_dataset)}")
 
-    # SFT config (replaces TrainingArguments in trl >= 0.12)
+    # SFT config
     use_bf16 = torch.cuda.is_bf16_supported() if torch.cuda.is_available() else False
     
     # Base configuration
@@ -239,19 +252,12 @@ def train(args):
         "fp16": not use_bf16 if torch.cuda.is_available() else False,
         "optim": "paged_adamw_8bit",
         "lr_scheduler_type": "cosine",
-        "report_to": "tensorboard",
+        "report_to": "none",
         "logging_dir": os.path.join(args.output_dir, "runs"),
         "load_best_model_at_end": True,
         "metric_for_best_model": "eval_loss",
         "max_grad_norm": 0.3,
-
-        # Sequence length — controlled via --max-length (default 1024)
-        "max_length": args.max_length,
-
-        # Packing — concatenates short sequences for GPU efficiency.
-        # Most Jarvis examples are <200 tokens so this can significantly
-        # improve throughput, but it changes loss dynamics.  Gate behind
-        # --packing so it is opt-in.
+        "max_seq_length": args.max_length,
         "packing": args.packing,
     }
 
@@ -275,7 +281,7 @@ def train(args):
     
     # Create data collator that masks out non-assistant tokens from loss
     data_collator = DataCollatorForCompletionOnlyLM(
-        response_template_ids=response_template_ids,
+        response_template=response_template_ids,
         tokenizer=tokenizer,
     )
 

@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-# Jarvis — .gitignore
+# Jarvis / Antigravity — .gitignore
 # ═══════════════════════════════════════════════════════════════
 
 # ─── Python ─────────────────────────────────────────────────────
@@ -24,13 +24,15 @@ build/
 *.manifest
 *.spec
 
-# ─── IDE ────────────────────────────────────────────────────────
+# ─── IDE / Tooling ──────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 .gemini/
+.blackboxcli/
+.pytest_cache/
 
 # ─── OS ─────────────────────────────────────────────────────────
 Thumbs.db
@@ -40,7 +42,7 @@ Desktop.ini
 # ─── Secrets ────────────────────────────────────────────────────
 .env
 
-# ─── ML Model Artifacts (NEVER commit model weights) ───────────
+# ─── ML Model Artifacts (NEVER commit weights) ──────────────────
 output/
 llama.cpp/
 *.gguf
@@ -51,19 +53,29 @@ llama.cpp/
 *.onnx
 *.tflite
 
-# ─── Audio / TTS Temp Files ─────────────────────────────────────
+# ─── Audio / TTS Temp ───────────────────────────────────────────
 *.wav
 *.mp3
 temp_tts.*
-command.wav
+Jarvis/temp_tts/
 
-# ─── Logs / Debug ───────────────────────────────────────────────
+# ─── Logs ───────────────────────────────────────────────────────
 logs/
 *.log
-test_output.txt
-system_prompt_debug.txt
+Jarvis/logs/
+Jarvis/crash.log
 
-# ─── Temp / Misc ────────────────────────────────────────────────
-*.tmp
+# ─── Workspace (sandbox) ────────────────────────────────────────
 workspace/
-.blackboxcli/
+
+# ─── Root-level scratch & session artifacts ─────────────────────
+COMPLETION_SUMMARY.txt
+STEP8_FINAL_SUMMARY.txt
+system_prompt_debug.txt
+example.txt
+test_output.txt
+image-1.png
+run_test.bat
+
+# ─── Raw Modelfile (keep Modelfile.jarvis) ──────────────────────
+Modelfile

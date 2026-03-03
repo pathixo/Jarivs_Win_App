@@ -43,7 +43,13 @@ def merge_lora(base_model: str, lora_path: str, output_path: str):
         trust_remote_code=True,
     )
 
+    # Resolve to absolute path so PEFT doesn't treat it as a HF repo ID
+    lora_path = str(Path(lora_path).resolve())
     print(f"Loading LoRA adapters: {lora_path}")
+    if not Path(lora_path).exists():
+        print(f"ERROR: LoRA adapter directory not found: {lora_path}")
+        print(f"  Did you run training first? Check --lora-path argument.")
+        sys.exit(1)
     model = PeftModel.from_pretrained(model, lora_path)
 
     print("Merging weights...")
@@ -199,7 +205,7 @@ def main():
     parser.add_argument("--base-model", default="Qwen/Qwen2.5-1.5B-Instruct",
                         help="Base model name on HuggingFace")
     # 8d: Fix LoRA path to match actual base model (Qwen, not Gemma)
-    parser.add_argument("--lora-path", default="output/jarvis-qwen-lora",
+    parser.add_argument("--lora-path", default="output/jarvis-gemma-lora",
                         help="Path to LoRA adapter directory")
     parser.add_argument("--merged-path", default="output/jarvis-merged",
                         help="Path to save merged model")

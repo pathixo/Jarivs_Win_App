@@ -124,7 +124,8 @@ def main():
 
         # Step 6: Export
         run_step("Export to Ollama", [
-            sys.executable, "-m", "Jarvis.sft.export_to_ollama"
+            sys.executable, "-m", "Jarvis.sft.export_to_ollama",
+            "--lora-path", "output/jarvis-gemma-lora",
         ])
 
     print(f"\n{'='*60}")

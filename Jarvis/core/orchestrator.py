@@ -34,6 +34,11 @@ from Jarvis.core.system import (
     ActionRequest, ActionType, ACTION_TAG_PATTERN, SHELL_TAG_PATTERN
 )
 from Jarvis.core.terminal_bridge import get_terminal_bridge
+from Jarvis.core.intent_engine import IntentEngine, IntentResult
+from Jarvis.config import (
+    GROQ_API_KEY, GROQ_INTENT_MODEL,
+    INTENT_ENGINE_ENABLED, INTENT_CONFIDENCE_THRESHOLD,
+)
 
 logger = logging.getLogger("jarvis.orchestrator")
 
@@ -179,6 +184,25 @@ MAX_OUTPUT_LENGTH = 500
 MAX_TTS_LENGTH = 300
 
 
+def _log_intent(intent: "IntentResult") -> None:
+    """Print a colourised intent analysis summary to the terminal."""
+    conf_color = "\033[92m" if intent.confidence >= 0.75 else ("\033[93m" if intent.confidence >= 0.5 else "\033[91m")
+    reset = "\033[0m"
+    tag = f"  [Intent] {conf_color}{intent.category}{reset}"
+    if intent.action:
+        tag += f" / {intent.action}"
+    tag += f" ({conf_color}{intent.confidence:.0%}{reset})"
+    if intent.is_ambiguous:
+        tag += f" ⚠ ambiguous"
+    if intent.latency_ms:
+        tag += f" [{intent.latency_ms:.0f}ms]"
+    clr.print_info(tag)
+    if intent.reasoning:
+        clr.print_info(f"    reasoning: {intent.reasoning}")
+    if intent.error:
+        clr.print_info(f"    [Intent fallback: {intent.error}]")
+
+
 class Orchestrator:
     """
     Central command router. Owns Brain + Tools and handles all user input.
@@ -203,6 +227,20 @@ class Orchestrator:
             self._backend,
             confirm_callback=self._request_confirmation,
         )
+
+        # ── Intent Engine (Deep Thinking) ─────────────────────────────────
+        # Powered by Groq — runs concurrently, adds zero net latency.
+        self.intent_engine: IntentEngine | None = None
+        if INTENT_ENGINE_ENABLED and GROQ_API_KEY:
+            self.intent_engine = IntentEngine(
+                api_key=GROQ_API_KEY,
+                model=GROQ_INTENT_MODEL,
+                confidence_threshold=INTENT_CONFIDENCE_THRESHOLD,
+            )
+            logger.info("IntentEngine initialized | model=%s threshold=%.0f%%",
+                        GROQ_INTENT_MODEL, INTENT_CONFIDENCE_THRESHOLD * 100)
+        else:
+            logger.info("IntentEngine disabled (INTENT_ENGINE_ENABLED=false or no GROQ_API_KEY)")
 
         # Apply initial persona voice to TTS
         if self.tts:
@@ -253,6 +291,14 @@ class Orchestrator:
         print()
         print(clr.divider())
         clr.print_user(command_text)
+
+        # ── Launch Deep Intent Analysis concurrently ────────────────────────
+        # Fires off immediately so it runs in parallel with any
+        # deterministic bypasses and the filler-phrase timeout.
+        _intent_future = None
+        if self.intent_engine:
+            _history = self.brain.memory.get_history()
+            _intent_future = self.intent_engine.analyze_async(command_text, _history)
 
         try:
             # 1. Meta-commands: "llm ..." or "brain ..."
@@ -335,9 +381,34 @@ class Orchestrator:
                 result = self._execute_shell(shell_cmd)
                 return result
 
+            # ── Collect intent result (if engine ran) ───────────────────────
+            # Collect with a short timeout (should already be done by now).
+            intent: IntentResult | None = None
+            if _intent_future is not None:
+                try:
+                    intent = _intent_future.result(timeout=1.5)
+                    _log_intent(intent)
+
+                    # Intent-assisted routing: if Groq is highly confident
+                    # in a specific category, log it and adjust the query.
+                    if intent.is_confident:
+                        effective = intent.effective_query or command_text
+                    else:
+                        effective = command_text
+                        if intent.is_ambiguous:
+                            clr.print_info(
+                                f"  [Intent] Ambiguous ({intent.confidence:.0%}): {intent.ambiguity_note}"
+                            )
+                except Exception as e:
+                    logger.debug("Intent future timed out or failed: %s", e)
+                    effective = command_text
+            else:
+                effective = command_text
+
             # 9. Route to Brain (LLM) for everything else
             return self._process_with_llm(
-                command_text,
+                effective,
+                intent=intent,
                 token_callback=token_callback,
                 begin_callback=begin_callback,
             )
@@ -576,6 +647,7 @@ class Orchestrator:
         depth: int = 0,
         token_callback=None,
         begin_callback=None,
+        intent: "IntentResult | None" = None,
     ) -> str:
         """
         Send to Brain, stream/parse response, execute any [SHELL]/[ACTION] commands found.
@@ -584,9 +656,18 @@ class Orchestrator:
         - Starts speaking conversational acknowledgment as tokens arrive.
         - Provides 'Thinking' fillers if the model is slow to respond.
         - Notifies before/after execution.
+        - Injects structured intent analysis context when available.
         """
         t0 = time.time()
-        
+
+        # ── Inject Intent Context into Brain memory (ephemeral system note) ──
+        _injected_intent_note = False
+        if intent and not intent.error:
+            note = intent.to_system_note()
+            if note:
+                self.brain.memory.add("system", note)
+                _injected_intent_note = True
+
         # ── 1. Thinking Filler Logic ──
         # If no tokens arrive within 600ms, say a filler to keep user engaged
         _first_token_received = threading.Event()

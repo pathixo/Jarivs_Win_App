@@ -47,6 +47,13 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
+# ─────────────────────── Intent Engine Config ────────────────────────────────
+# Deep thinking intent analysis powered by Groq (runs concurrently — no latency cost)
+# Set INTENT_ENGINE_ENABLED=false to disable if Groq rate limits are a concern.
+INTENT_ENGINE_ENABLED     = os.getenv("INTENT_ENGINE_ENABLED", "true").lower() == "true"
+GROQ_INTENT_MODEL         = os.getenv("GROQ_INTENT_MODEL", "llama3-70b-8192")
+INTENT_CONFIDENCE_THRESHOLD = float(os.getenv("INTENT_CONFIDENCE_THRESHOLD", "0.6"))
+
 # Grok Configuration (xAI Cloud)
 GROK_API_KEY = os.getenv("GROK_API_KEY", "")
 GROK_MODEL = os.getenv("GROK_MODEL", "grok-3-mini-fast")
