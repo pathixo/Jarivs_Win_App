@@ -695,6 +695,9 @@ class Brain:
         self.memory = ConversationMemory(max_messages=self.settings.max_history)
         self.context = ContextManager()
 
+        # Personalization memory engine (set by orchestrator after init)
+        self._memory_engine = None
+
         # Initialize all backends (lazy — they only call APIs when used)
         self._backends = {
             Provider.OLLAMA: _OllamaBackend(OLLAMA_URL),
@@ -779,7 +782,7 @@ class Brain:
             return
 
         conv_history = history if history is not None else self.memory.get_history()
-        augmented_settings = self._get_augmented_settings()
+        augmented_settings = self._get_augmented_settings(user_query=text.strip())
 
         # Apply overrides (hybrid orchestration)
         if provider_override:
@@ -931,7 +934,7 @@ class Brain:
 
         # Use internal memory if no external history supplied
         conv_history = history if history is not None else self.memory.get_history()
-        augmented_settings = self._get_augmented_settings()
+        augmented_settings = self._get_augmented_settings(user_query=text.strip())
 
         # Apply overrides (hybrid orchestration)
         if provider_override:
@@ -1031,15 +1034,28 @@ class Brain:
 
         return response or "Error: Failed to generate response."
 
-    def _get_augmented_settings(self) -> BrainSettings:
+    def _get_augmented_settings(self, user_query: str = "") -> BrainSettings:
         """
-        Returns a copy of settings for this request.
+        Returns a copy of settings for this request, with personalization
+        memory injected into the system prompt if available.
+
         NOTE: Context injection is deliberately disabled — injecting OS/directory info
         into every prompt confuses small models and causes hallucinations.
         Context is only provided if explicitly requested by the user.
         """
         import copy
-        return copy.copy(self.settings)
+        settings = copy.copy(self.settings)
+
+        # ── Inject personalization memory ─────────────────────────────
+        if self._memory_engine is not None:
+            try:
+                mem_block = self._memory_engine.format_for_prompt(user_query)
+                if mem_block:
+                    settings.system_prompt = settings.system_prompt + "\n\n" + mem_block
+            except Exception as e:
+                logger.warning("Memory injection failed: %s", e)
+
+        return settings
 
     def set_provider(self, provider_name: str) -> tuple[bool, str]:
         """Switch the active LLM provider."""

@@ -34,10 +34,11 @@ sys.excepthook = handle_exception
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, pyqtSignal, Qt, QTimer
+from PyQt6.QtGui import QIcon
 from PyQt6.QtMultimedia import QMediaPlayer
 from Jarvis.ui.window import MainWindow
-from Jarvis.ui.terminal_window import TerminalWindow
 from Jarvis.ui.tray import JarvisTrayIcon
+from Jarvis.ui.settings_window import SettingsWindow
 from Jarvis.core.orchestrator import Orchestrator
 from Jarvis.core import colors as clr
 from Jarvis.core.terminal_bridge import get_terminal_bridge
@@ -62,21 +63,44 @@ def main():
         app = QApplication(sys.argv)
         app.setQuitOnLastWindowClosed(False)  # Keep running when window hides
 
+        # Set Application Icon
+        icon_path = os.path.join(parent_dir, "jarvis.ico")
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+
         worker = Worker()
 
         # Create and show main GUI window
         window = MainWindow()
         window.show()
 
-        # Create and show terminal window
-        terminal_window = TerminalWindow()
-        terminal_window.show()
+        # Create settings window (hidden by default)
+        settings = SettingsWindow()
+        window.settings_requested.connect(settings.show)
 
         tts = TTS()
         # Listener (fully autonomous)
         listener = Listener()
 
         orchestrator = Orchestrator(worker=worker, tts=tts, listener=listener)
+
+        # ── Initialize personalization subsystems ────────────────────────
+        try:
+            from Jarvis.core.database import get_database
+            db = get_database()  # Initialize database + run migrations
+            
+            from Jarvis.core.user_profile import get_profile_manager
+            profile_mgr = get_profile_manager()
+            profile_mgr.get_or_create_default_user()  # Ensure default user exists
+            
+            from Jarvis.core.memory_engine import get_memory_engine
+            memory_engine = get_memory_engine()
+            orchestrator.set_memory_engine(memory_engine)
+            
+            clr.print_info("  Personalization subsystems initialized")
+        except Exception as e:
+            logging.warning(f"Personalization subsystems failed (non-fatal): {e}")
+            clr.print_info(f"  [Warn] Personalization unavailable: {e}")
 
         # StreamingPipeline for overlapping STT→LLM→TTS
         pipeline = StreamingPipeline(brain=orchestrator.brain, tts=tts)
@@ -107,21 +131,24 @@ def main():
                 Qt.ConnectionType.QueuedConnection,
             )
 
-        # ─── Terminal Bridge Connection ─────────────────────────────────
+        # ─── Terminal Bridge → Styled Terminal Window ──────────────────
         terminal_bridge = get_terminal_bridge()
         
-        # Connect terminal bridge signals to terminal window
+        def _get_tw():
+            """Lazily get the terminal window from MainWindow."""
+            return window._ensure_terminal_window()
+        
         terminal_bridge.command_executed.connect(
-            terminal_window.append_command, 
-            Qt.ConnectionType.QueuedConnection
+            lambda cmd, ts=None: _get_tw().append_command(cmd, ts),
+            Qt.ConnectionType.QueuedConnection,
         )
         terminal_bridge.output_ready.connect(
-            lambda cmd, output, is_err: terminal_window.append_output(output, is_err),
-            Qt.ConnectionType.QueuedConnection
+            lambda cmd, output, is_err: _get_tw().append_output(output, is_err),
+            Qt.ConnectionType.QueuedConnection,
         )
         terminal_bridge.status_update.connect(
-            terminal_window.update_status,
-            Qt.ConnectionType.QueuedConnection
+            lambda text, stype: _get_tw().update_status(text, stype),
+            Qt.ConnectionType.QueuedConnection,
         )
         
         # Update terminal status based on listener state
@@ -129,10 +156,10 @@ def main():
             state_map = {
                 "initialized": ("Initializing...", "processing"),
                 "listening": ("● Ready", "listening"),
-                "recording": ("🔴 Recording", "processing"),
-                "processing": ("⟳ Processing", "processing"),
-                "paused": ("⏸ Paused", "normal"),
-                "error": ("✗ Error", "error"),
+                "recording": ("Recording", "processing"),
+                "processing": ("Processing", "processing"),
+                "paused": ("Paused", "normal"),
+                "error": ("Error", "error"),
             }
             status_text, status_type = state_map.get(state, (f"State: {state}", "normal"))
             terminal_bridge.status_update.emit(status_text, status_type)
@@ -145,6 +172,8 @@ def main():
         # Connect Tray Signals
         tray.on_show_window.connect(window.show)
         tray.on_show_window.connect(window.activateWindow)
+        tray.on_show_settings.connect(settings.show)
+        tray.on_show_settings.connect(settings.activateWindow)
         tray.on_quit_app.connect(app.quit)
         
         def toggle_listening():

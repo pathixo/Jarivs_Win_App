@@ -115,6 +115,10 @@ KOKORO_VOICES_PATH = os.getenv("KOKORO_VOICES_PATH", "")
 BASE_DIR = get_base_path()
 DATA_DIR = get_app_data_path()
 LOGS_DIR = os.path.join(DATA_DIR, "logs")
+AVATARS_DIR = os.path.join(DATA_DIR, "avatars")
+VOICE_PROFILES_DIR = os.path.join(DATA_DIR, "voice_profiles")
+DB_PATH = os.path.join(DATA_DIR, "jarvis.db")
 
-if not os.path.exists(LOGS_DIR):
-    os.makedirs(LOGS_DIR, exist_ok=True)
+for _dir in [LOGS_DIR, AVATARS_DIR, VOICE_PROFILES_DIR]:
+    if not os.path.exists(_dir):
+        os.makedirs(_dir, exist_ok=True)

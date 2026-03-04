@@ -216,6 +216,7 @@ class Orchestrator:
         self.tts = tts  # TTS instance for voice switching
         self.listener = listener  # Listener instance for STT language switching
         self._stt_language = "auto"  # Track current STT language
+        self._memory_engine = None   # Set via set_memory_engine() after init
         
         self.confirmation_mode = False  # Ask before running any shell command
         self.wsl_mode = False           # Run risky/all commands in WSL
@@ -268,6 +269,12 @@ class Orchestrator:
             except Exception as e:
                 logger.error("Health monitor error: %s", e)
                 time.sleep(60)
+
+    def set_memory_engine(self, engine):
+        """Attach the personalization memory engine to orchestrator and brain."""
+        self._memory_engine = engine
+        self.brain._memory_engine = engine
+        logger.info("MemoryEngine attached to Orchestrator + Brain")
 
     # ── Main Entry Point ────────────────────────────────────────────────────
 
@@ -326,11 +333,17 @@ class Orchestrator:
                 print(clr.info(result))
                 return result
 
-            # 5. Memory commands
+            # 5. Memory commands (conversation memory)
             if re.search(r"^(clear memory|forget|reset memory)$", command_text, re.IGNORECASE):
                 result = self.brain.clear_memory()
                 print(clr.info(result))
                 return result
+
+            # 5a. Personalization memory commands: "remember ...", "memory list", "memory clear", etc.
+            mem_result = self._handle_memory_command(command_text)
+            if mem_result is not None:
+                print(clr.info(mem_result))
+                return mem_result
 
             # 5. STT commands: "stt ..."
             if re.search(r"^stt\b", command_text, re.IGNORECASE):
@@ -548,6 +561,68 @@ class Orchestrator:
             req = ActionRequest(action_type=ActionType.LAUNCH_APP, target="taskmgr")
             result = self.action_router.execute_action(req)
             return result.message
+
+        # ── 8. Clipboard ──────────────────────────────────────────────
+        if re.search(r"(what('?s| is)( in| on)?( my| the)?|read( my| the)?|get( my| the)?|show( my| the)?|paste( my| the)?)\s*clipboard", tl):
+            clr.print_info("  Clipboard read bypass")
+            return self._backend.get_clipboard().message
+
+        clip_set_match = re.search(r"(copy|set|put)\s+(.+?)\s+(to|in(to)?)\s+(the\s+)?clipboard", tl)
+        if clip_set_match:
+            text_to_copy = clip_set_match.group(2).strip()
+            clr.print_info(f"  Clipboard write bypass: {text_to_copy[:40]}")
+            return self._backend.set_clipboard(text_to_copy).message
+
+        # ── 9. Virtual Desktops ───────────────────────────────────────
+        if re.search(r"(create|new|add)\s+(a\s+)?(virtual\s+)?desktop", tl):
+            clr.print_info("  Virtual desktop create bypass")
+            return self._backend.create_virtual_desktop().message
+
+        desk_switch = re.search(r"switch\s+(to\s+)?(the\s+)?(next|previous|left|right)\s+(virtual\s+)?desktop", tl)
+        if desk_switch:
+            direction = desk_switch.group(3).strip()
+            direction = "left" if direction in ("previous", "left") else "right"
+            clr.print_info(f"  Virtual desktop switch bypass: {direction}")
+            return self._backend.switch_virtual_desktop(direction).message
+
+        if re.search(r"close\s+(the\s+)?(current\s+)?(virtual\s+)?desktop", tl):
+            clr.print_info("  Virtual desktop close bypass")
+            return self._backend.close_virtual_desktop().message
+
+        # ── 10. Window Snapping ────────────────────────────────────────
+        snap_match = re.search(
+            r"snap\s+(the\s+)?(window|this)\s+(to\s+)?(the\s+)?(left|right|top|bottom|maximize|minimize|top[- ]?left|top[- ]?right|bottom[- ]?left|bottom[- ]?right)",
+            tl
+        )
+        if not snap_match:
+            snap_match = re.search(
+                r"(maximize|minimize|snap\s+(left|right|top|bottom))\s*(the\s+)?(window)?",
+                tl
+            )
+        if snap_match:
+            direction = snap_match.group(0).strip()
+            # Extract just the direction word
+            for d in ["top-left", "top-right", "bottom-left", "bottom-right",
+                       "topleft", "topright", "bottomleft", "bottomright",
+                       "left", "right", "top", "bottom", "maximize", "minimize"]:
+                if d in direction:
+                    direction = d.replace(" ", "-")
+                    break
+            clr.print_info(f"  Snap window bypass: {direction}")
+            return self._backend.snap_window(direction).message
+
+        # ── 11. Taskbar Pin/Unpin ──────────────────────────────────────
+        pin_match = re.search(r"pin\s+([\w\s.]+?)\s+to\s+(the\s+)?taskbar", tl)
+        if pin_match:
+            app_name = pin_match.group(1).strip()
+            clr.print_info(f"  Pin to taskbar bypass: {app_name}")
+            return self._backend.pin_to_taskbar(app_name).message
+
+        unpin_match = re.search(r"unpin\s+([\w\s.]+?)\s+from\s+(the\s+)?taskbar", tl)
+        if unpin_match:
+            app_name = unpin_match.group(1).strip()
+            clr.print_info(f"  Unpin from taskbar bypass: {app_name}")
+            return self._backend.unpin_from_taskbar(app_name).message
 
         # Not handled — fall through to media/search bypass or LLM
         return None
@@ -934,6 +1009,10 @@ class Orchestrator:
         # Store in memory
         self.brain.memory.add("user", command_text)
         self.brain.memory.add("assistant", llm_response or "\n".join(execution_results))
+
+        # ── Auto-extract personalization memories (background) ────────
+        if self._memory_engine and llm_response:
+            self._memory_engine.auto_extract(command_text, llm_response)
 
         return "\n".join(final_parts) if final_parts else (llm_response or "Done.")
 
@@ -1380,6 +1459,62 @@ class Orchestrator:
             return f"STT language set to '{lang_code}' (will apply on next restart)."
 
         return help_text
+
+    def _handle_memory_command(self, command_text: str) -> Optional[str]:
+        """
+        Handle personalization memory commands.
+        Returns response string if handled, or None to fall through.
+        
+        Supported:
+          - "remember that ..."  /  "my name is ..."  →  explicit save
+          - "memory list" / "what do you know about me"  →  list memories
+          - "memory delete <id>"  →  delete specific memory
+          - "memory clear"  →  wipe all personalization memories
+          - "memory count"  →  show count
+        """
+        if not hasattr(self, '_memory_engine') or self._memory_engine is None:
+            return None
+
+        tl = command_text.strip().lower()
+
+        # ── Explicit "remember that …" ────────────────────────────────
+        # Handled by MemoryEngine's try_explicit_save — check first
+        saved = self._memory_engine.try_explicit_save(command_text)
+        if saved:
+            clr.print_info(f"  Memory saved: {saved[:60]}")
+            return f"Got it, I'll remember that: {saved}"
+
+        # ── "memory list" or "what do you know about me" ──────────────
+        if re.search(r"^memory\s+(list|show|all)$", tl) or \
+           re.search(r"what\s+do\s+you\s+(know|remember)\s+(about\s+me|from\s+me)", tl):
+            memories = self._memory_engine.get_all_memories()
+            if not memories:
+                return "I don't have any stored memories about you yet."
+            lines = [f"I have {len(memories)} memories about you:\n"]
+            for m in memories:
+                lines.append(f"  [{m['id']}] {m['content']}")
+            return "\n".join(lines)
+
+        # ── "memory delete <id>" ─────────────────────────────────────
+        del_match = re.search(r"^memory\s+delete\s+(\d+)$", tl)
+        if del_match:
+            mem_id = int(del_match.group(1))
+            ok = self._memory_engine.delete_memory(mem_id)
+            if ok:
+                return f"Memory #{mem_id} deleted."
+            return f"Memory #{mem_id} not found."
+
+        # ── "memory clear" ────────────────────────────────────────────
+        if re.search(r"^memory\s+clear$", tl):
+            count = self._memory_engine.clear_all_memories()
+            return f"All {count} personalization memories cleared."
+
+        # ── "memory count" ────────────────────────────────────────────
+        if re.search(r"^memory\s+count$", tl):
+            count = self._memory_engine.get_memory_count()
+            return f"I have {count} memories stored about you."
+
+        return None
 
     def _handle_shell_command(self, command_text: str) -> str:
         """Handle shell configuration and sandbox controls."""

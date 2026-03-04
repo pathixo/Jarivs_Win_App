@@ -9,6 +9,7 @@ from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QRadialGradient, QTextCu
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 from Jarvis.output.visuals import VoiceWave
+from Jarvis.ui.terminal_window import TerminalWindow
 
 class MainWindow(QMainWindow):
     """Main Jarvis window with thinking orb, status bar, and command input panel."""
@@ -17,6 +18,8 @@ class MainWindow(QMainWindow):
     command_submitted = pyqtSignal(str)
     # Signal emitted when user responds to a confirmation request
     confirm_response = pyqtSignal(bool)
+    # Signal emitted when user clicks settings
+    settings_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -118,10 +121,35 @@ class MainWindow(QMainWindow):
         self.terminal_btn.setToolTip("Show terminal output")
         self.terminal_btn.clicked.connect(self.show_terminal_window)
 
+        # Button for settings window
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setFixedSize(32, 26)
+        self.settings_btn.setFont(QFont("Segoe UI", 12))
+        self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_btn.setStyleSheet("""
+            QPushButton {
+                color: #8892b0;
+                background: rgba(35, 53, 84, 0.6);
+                border: 1px solid #233554;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                color: #00ffff;
+                background: rgba(0, 255, 255, 0.1);
+                border-color: #00ffff;
+            }
+            QPushButton:pressed {
+                background: rgba(0, 255, 255, 0.2);
+            }
+        """)
+        self.settings_btn.setToolTip("Open Settings")
+        self.settings_btn.clicked.connect(self.settings_requested.emit)
+
         header_layout.addWidget(self.status_label)
         header_layout.addStretch()
         header_layout.addWidget(self.mode_label)
         header_layout.addWidget(self.terminal_btn)
+        header_layout.addWidget(self.settings_btn)
         header_layout.addWidget(self.toggle_btn)
 
         # ─── 2. Voice Wave Container ────────────────────────────────────
@@ -437,12 +465,8 @@ class MainWindow(QMainWindow):
         self.response_log.setTextCursor(cursor)
         self.response_log.ensureCursorVisible()
 
-        if hasattr(self, "terminal_text"):
-            tc = self.terminal_text.textCursor()
-            tc.movePosition(QTextCursor.MoveOperation.End)
-            tc.insertText(text)
-            self.terminal_text.setTextCursor(tc)
-            self.terminal_text.ensureCursorVisible()
+        if hasattr(self, '_terminal_window') and self._terminal_window is not None:
+            self._terminal_window.append_output(text)
 
     def on_stream_end(self):
         """Finalise a streaming response block."""
@@ -554,56 +578,22 @@ class MainWindow(QMainWindow):
         QApplication.instance().quit()
 
 
-    def create_terminal_window(self):
-        """Creates a new window to display terminal output."""
-        self.terminal_window = QMainWindow()
-        self.terminal_window.setWindowTitle("Terminal Output")
-        self.terminal_text = QTextEdit()
-        self.terminal_text.setReadOnly(True)
-        self.terminal_text.setFont(QFont("Consolas", 9))
-        self.terminal_text.setStyleSheet("""
-            QTextEdit {
-                color: #c8d6e5;
-                background: rgba(15, 15, 26, 0.9);
-                border: 1px solid #1a2744;
-                border-radius: 8px;
-                padding: 8px;
-                selection-background-color: #233554;
-            }
-            QScrollBar:vertical {
-                background: transparent;
-                width: 6px;
-                margin: 4px 0;
-            }
-            QScrollBar::handle:vertical {
-                background: #233554;
-                border-radius: 3px;
-                min-height: 20px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #2e4a6e;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0;
-            }
-        """)
-        self.terminal_window.setCentralWidget(self.terminal_text)
-        self.terminal_window.resize(600, 400)
+    def _ensure_terminal_window(self):
+        """Lazily create the styled TerminalWindow on first use."""
+        if not hasattr(self, '_terminal_window') or self._terminal_window is None:
+            self._terminal_window = TerminalWindow()
+        return self._terminal_window
 
     def append_to_terminal(self, text: str):
         """Appends text to the terminal window."""
-        if not hasattr(self, 'terminal_window'):
-            self.create_terminal_window()
-        self.terminal_text.append(text)
-        cursor = self.terminal_text.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.terminal_text.setTextCursor(cursor)
+        tw = self._ensure_terminal_window()
+        tw.append_output(text)
 
     def show_terminal_window(self):
         """Shows the terminal window."""
-        if not hasattr(self, 'terminal_window'):
-            self.create_terminal_window()
-        self.terminal_window.show()
+        tw = self._ensure_terminal_window()
+        tw.show()
+        tw.activateWindow()
 
     def show_confirmation_dialog(self, command_text: str):
         """Show a styled confirmation dialog for shell commands."""

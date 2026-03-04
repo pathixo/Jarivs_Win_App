@@ -9,6 +9,7 @@ class JarvisTrayIcon(QSystemTrayIcon):
     """
     # Signals to Main/Orchestrator
     on_show_window = pyqtSignal()
+    on_show_settings = pyqtSignal()
     on_toggle_listening = pyqtSignal()
     on_quit_app = pyqtSignal()
 
@@ -21,6 +22,11 @@ class JarvisTrayIcon(QSystemTrayIcon):
         
         self.action_show = self.menu.addAction("Show Jarvis")
         self.action_show.triggered.connect(self.on_show_window.emit)
+        
+        self.menu.addSeparator()
+
+        self.action_settings = self.menu.addAction("Settings")
+        self.action_settings.triggered.connect(self.on_show_settings.emit)
         
         self.menu.addSeparator()
         

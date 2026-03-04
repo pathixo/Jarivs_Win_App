@@ -230,6 +230,15 @@ class ActionRouter:
             ActionType.FILE_READ:     self._handle_file_read,
             ActionType.FILE_WRITE:    self._handle_file_write,
             ActionType.FILE_LIST:     self._handle_file_list,
+            # Desktop & productivity
+            ActionType.CLIPBOARD_GET:       self._handle_clipboard_get,
+            ActionType.CLIPBOARD_SET:       self._handle_clipboard_set,
+            ActionType.VIRTUAL_DESKTOP_NEW:    self._handle_virtual_desktop_new,
+            ActionType.VIRTUAL_DESKTOP_SWITCH: self._handle_virtual_desktop_switch,
+            ActionType.VIRTUAL_DESKTOP_CLOSE:  self._handle_virtual_desktop_close,
+            ActionType.SNAP_WINDOW:         self._handle_snap_window,
+            ActionType.PIN_TASKBAR:         self._handle_pin_taskbar,
+            ActionType.UNPIN_TASKBAR:       self._handle_unpin_taskbar,
         }
 
         handler = handlers.get(request.action_type)
@@ -497,6 +506,42 @@ class ActionRouter:
         # In a real implementation, this would call self.backend.search_system(query)
         cmd = f"Get-ChildItem -Path $env:USERPROFILE -Filter '*{query}*' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 10 | Format-Table Name, Directory"
         return self.execute_shell(cmd, from_llm=True)
+
+    # ── Desktop & Productivity Handlers ────────────────────────────────
+
+    def _handle_clipboard_get(self, request: ActionRequest) -> ActionResult:
+        """Handle CLIPBOARD_GET actions."""
+        return self.backend.get_clipboard()
+
+    def _handle_clipboard_set(self, request: ActionRequest) -> ActionResult:
+        """Handle CLIPBOARD_SET actions."""
+        return self.backend.set_clipboard(request.target)
+
+    def _handle_virtual_desktop_new(self, request: ActionRequest) -> ActionResult:
+        """Handle VIRTUAL_DESKTOP_NEW actions."""
+        return self.backend.create_virtual_desktop()
+
+    def _handle_virtual_desktop_switch(self, request: ActionRequest) -> ActionResult:
+        """Handle VIRTUAL_DESKTOP_SWITCH actions."""
+        direction = request.target.strip() if request.target else "right"
+        return self.backend.switch_virtual_desktop(direction)
+
+    def _handle_virtual_desktop_close(self, request: ActionRequest) -> ActionResult:
+        """Handle VIRTUAL_DESKTOP_CLOSE actions."""
+        return self.backend.close_virtual_desktop()
+
+    def _handle_snap_window(self, request: ActionRequest) -> ActionResult:
+        """Handle SNAP_WINDOW actions."""
+        direction = request.target.strip() if request.target else "maximize"
+        return self.backend.snap_window(direction)
+
+    def _handle_pin_taskbar(self, request: ActionRequest) -> ActionResult:
+        """Handle PIN_TASKBAR actions."""
+        return self.backend.pin_to_taskbar(request.target.strip())
+
+    def _handle_unpin_taskbar(self, request: ActionRequest) -> ActionResult:
+        """Handle UNPIN_TASKBAR actions."""
+        return self.backend.unpin_from_taskbar(request.target.strip())
 
     # ── Utilities ───────────────────────────────────────────────────────
 

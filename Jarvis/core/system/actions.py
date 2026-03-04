@@ -37,6 +37,16 @@ class ActionType(str, Enum):
     SET_TIMER      = "set_timer"
     OPEN_FOLDER    = "open_folder"
 
+    # Desktop & productivity actions
+    CLIPBOARD_GET       = "clipboard_get"
+    CLIPBOARD_SET       = "clipboard_set"
+    VIRTUAL_DESKTOP_NEW    = "virtual_desktop_new"
+    VIRTUAL_DESKTOP_SWITCH = "virtual_desktop_switch"
+    VIRTUAL_DESKTOP_CLOSE  = "virtual_desktop_close"
+    SNAP_WINDOW         = "snap_window"
+    PIN_TASKBAR         = "pin_taskbar"
+    UNPIN_TASKBAR       = "unpin_taskbar"
+
     # Error Types (used in ActionResult.action_type for failed actions)
     APP_NOT_FOUND        = "app_not_found"
     MEDIA_SEARCH_FAILED  = "media_search_failed"

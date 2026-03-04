@@ -37,7 +37,6 @@ class TerminalWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Jarvis Terminal")
         self.resize(900, 600)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         
         # Command history for display
         self.command_history = deque(maxlen=500)  # Store last 500 commands
@@ -316,9 +315,9 @@ class TerminalWindow(QMainWindow):
         self.command_count_label.setText("Commands: 0")
     
     def closeEvent(self, event):
-        """Handle window close event."""
-        print("[Terminal] Closing terminal window...")
-        super().closeEvent(event)
+        """Hide instead of destroying so it can be re-shown."""
+        event.ignore()
+        self.hide()
 
 
 def create_terminal_window():

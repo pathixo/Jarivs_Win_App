@@ -16,3 +16,4 @@ pyaudio
 psutil>=5.9.0
 silero-vad
 duckduckgo-search
+TTS>=0.22.0

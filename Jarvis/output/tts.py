@@ -20,8 +20,9 @@ class TTS(QObject):
     Multi-engine TTS with automatic routing.
 
     Engine selection (TTS_ENGINE config):
-      - "auto"   → Kokoro (local GPU) with edge-tts fallback
+      - "auto"   → Kokoro (local GPU) → XTTS (cloned voice) → edge-tts fallback
       - "kokoro" → Always use Kokoro ONNX (lowest latency, ~50-150ms)
+      - "xtts"   → Always use XTTS v2 (voice cloning, ~500-1500ms)
       - "edge"   → Always use edge-tts (Microsoft cloud, ~300-600ms)
 
     Signals:
@@ -41,11 +42,15 @@ class TTS(QObject):
         super().__init__(parent)
         self._voice = TTS_VOICE
         self._rate = "+15%"
+        self._speed = 1.0       # Normalized speed: 0.5 – 2.0
+        self._pitch = 0         # Pitch offset in Hz: -50 to +50
+        self._volume = 100      # Volume percent: 0 – 100
         self._queue = queue.Queue()
         self._stop_event = threading.Event()
         self._language_mode = "auto"   # "auto", "en", "hi"
         self._is_speaking = False
         self._engine = TTS_ENGINE.lower()
+        self._xtts_voice_name = ""  # Active cloned voice profile name
 
         # Ensure temp directory exists
         self._temp_dir = os.path.join(DATA_DIR, "temp_tts")
@@ -68,6 +73,21 @@ class TTS(QObject):
             except Exception as e:
                 logger.warning("Kokoro TTS init failed: %s — using edge-tts", e)
                 self._kokoro = None
+
+        # Initialize XTTS voice cloning engine (lazy)
+        self._xtts = None
+        if self._engine in ("auto", "xtts"):
+            try:
+                from Jarvis.output.xtts_tts import XTTSTTSEngine
+                self._xtts = XTTSTTSEngine()
+                if self._xtts.available:
+                    logger.info("XTTS voice cloning engine available")
+                else:
+                    logger.info("XTTS unavailable (Coqui TTS not installed)")
+                    self._xtts = None
+            except Exception as e:
+                logger.warning("XTTS init failed: %s", e)
+                self._xtts = None
 
         # Persistent event loop for edge-tts (avoids creating new loop per request)
         self._edge_loop = asyncio.new_event_loop()
@@ -114,9 +134,48 @@ class TTS(QObject):
         """Change the TTS rate (e.g., '+10%', '-5%')."""
         self._rate = rate
 
+    def set_speed(self, speed: float) -> None:
+        """Set normalized speech speed (0.5 = half, 1.0 = normal, 2.0 = double)."""
+        self._speed = max(0.25, min(3.0, speed))
+        # Convert to Edge-TTS rate string
+        pct = int((self._speed - 1.0) * 100)
+        self._rate = f"{pct:+d}%"
+        logger.info("TTS speed set to %.1fx (rate=%s)", self._speed, self._rate)
+
+    def set_pitch(self, pitch: int) -> None:
+        """Set pitch offset in Hz (-50 to +50)."""
+        self._pitch = max(-50, min(50, pitch))
+        logger.info("TTS pitch set to %+dHz", self._pitch)
+
+    def set_volume(self, volume: int) -> None:
+        """Set volume percentage (0-100)."""
+        self._volume = max(0, min(100, volume))
+        logger.info("TTS volume set to %d%%", self._volume)
+
+    def get_speed(self) -> float:
+        """Return current speed multiplier."""
+        return self._speed
+
+    def get_pitch(self) -> int:
+        """Return current pitch offset in Hz."""
+        return self._pitch
+
+    def get_volume(self) -> int:
+        """Return current volume percentage."""
+        return self._volume
+
     def get_voice(self) -> str:
         """Return the current TTS voice ID."""
         return self._voice
+
+    def set_xtts_voice(self, voice_name: str) -> None:
+        """Set the active XTTS cloned voice profile name."""
+        self._xtts_voice_name = voice_name
+        logger.info("XTTS voice set to: %s", voice_name)
+
+    def get_xtts_voice(self) -> str:
+        """Return the active XTTS voice profile name."""
+        return self._xtts_voice_name
 
     def set_language_mode(self, mode: str) -> bool:
         """
@@ -303,6 +362,15 @@ class TTS(QObject):
                 logger.info("TTS latency: %.0fms (kokoro)", self._last_latency_ms)
                 return
 
+        # Try XTTS voice cloning (if a cloned voice is active)
+        if self._xtts and self._xtts_voice_name and self._engine in ("auto", "xtts"):
+            success = self._process_with_xtts(text)
+            if success:
+                self._last_latency_ms = (time.time() - t0) * 1000
+                self._engine_used = "xtts"
+                logger.info("TTS latency: %.0fms (xtts)", self._last_latency_ms)
+                return
+
         # Fall back to edge-tts
         success = self._process_with_edge(text)
         self._last_latency_ms = (time.time() - t0) * 1000
@@ -319,6 +387,23 @@ class TTS(QObject):
         output_file = os.path.abspath(os.path.join(self._temp_dir, filename))
 
         success = self._kokoro.synthesize_to_wav(text, output_file)
+        if success and os.path.exists(output_file):
+            self.audio_generated.emit(output_file)
+            return True
+        return False
+
+    def _process_with_xtts(self, text: str) -> bool:
+        """Synthesize using XTTS voice cloning and emit file path."""
+        if not self._xtts or not self._xtts_voice_name:
+            return False
+
+        if len(text) > 500:
+            text = text[:500]
+
+        filename = f"tts_{int(time.time() * 1000)}.wav"
+        output_file = os.path.abspath(os.path.join(self._temp_dir, filename))
+
+        success = self._xtts.synthesize(text, self._xtts_voice_name, output_file)
         if success and os.path.exists(output_file):
             self.audio_generated.emit(output_file)
             return True
@@ -355,7 +440,15 @@ class TTS(QObject):
         output_file = os.path.abspath(os.path.join(self._temp_dir, filename))
         
         try:
-            communicate = edge_tts.Communicate(text, voice, rate=self._rate)
+            # Build pitch string for edge-tts SSML
+            pitch_str = f"{self._pitch:+d}Hz" if self._pitch != 0 else "+0Hz"
+            volume_str = f"{self._volume - 100:+d}%" if self._volume != 100 else "+0%"
+            communicate = edge_tts.Communicate(
+                text, voice,
+                rate=self._rate,
+                pitch=pitch_str,
+                volume=volume_str,
+            )
             await communicate.save(output_file)
             
             if os.path.exists(output_file):

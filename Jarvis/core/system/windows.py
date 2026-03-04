@@ -852,3 +852,174 @@ class WindowsBackend(SystemBackend):
                 action_type=ActionType.OPEN_FOLDER,
             )
 
+    # ── Clipboard Management ────────────────────────────────────────────
+
+    def get_clipboard(self) -> ActionResult:
+        """Get the current clipboard text content."""
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            content = result.stdout.strip()
+            if content:
+                return ActionResult(
+                    success=True,
+                    message=f"Your clipboard contains: {content[:200]}{'...' if len(content) > 200 else ''}",
+                    data={"content": content},
+                )
+            else:
+                return ActionResult(success=True, message="Your clipboard is empty.")
+        except Exception as e:
+            logger.error("Get clipboard failed: %s", e)
+            return ActionResult(success=False, message="I couldn't read the clipboard.", error=str(e))
+
+    def set_clipboard(self, text: str) -> ActionResult:
+        """Set the clipboard text content."""
+        try:
+            # Use PowerShell's Set-Clipboard; pipe text via stdin to avoid injection
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -Value $input"],
+                input=text, capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            return ActionResult(success=True, message="Text copied to clipboard.")
+        except Exception as e:
+            logger.error("Set clipboard failed: %s", e)
+            return ActionResult(success=False, message="I couldn't set the clipboard.", error=str(e))
+
+    # ── Virtual Desktop Management ───────────────────────────────────────
+
+    def create_virtual_desktop(self) -> ActionResult:
+        """Create a new virtual desktop (Ctrl+Win+D)."""
+        try:
+            self._send_keys("^#{d}")
+            return ActionResult(success=True, message="Created a new virtual desktop.")
+        except Exception as e:
+            logger.error("Create virtual desktop failed: %s", e)
+            return ActionResult(success=False, message="I couldn't create a new desktop.", error=str(e))
+
+    def switch_virtual_desktop(self, direction: str = "right") -> ActionResult:
+        """Switch to adjacent virtual desktop (Ctrl+Win+Left/Right)."""
+        try:
+            key = "{LEFT}" if direction.lower() in ("left", "previous", "prev") else "{RIGHT}"
+            self._send_keys(f"^#{key}")
+            dir_name = "previous" if "LEFT" in key else "next"
+            return ActionResult(success=True, message=f"Switched to the {dir_name} desktop.")
+        except Exception as e:
+            logger.error("Switch virtual desktop failed: %s", e)
+            return ActionResult(success=False, message="I couldn't switch desktops.", error=str(e))
+
+    def close_virtual_desktop(self) -> ActionResult:
+        """Close the current virtual desktop (Ctrl+Win+F4)."""
+        try:
+            self._send_keys("^#{F4}")
+            return ActionResult(success=True, message="Closed the current virtual desktop.")
+        except Exception as e:
+            logger.error("Close virtual desktop failed: %s", e)
+            return ActionResult(success=False, message="I couldn't close this desktop.", error=str(e))
+
+    # ── Window Snapping ──────────────────────────────────────────────────
+
+    def snap_window(self, direction: str) -> ActionResult:
+        """Snap the active window using Win+Arrow key combinations."""
+        key_map = {
+            "left":         "#{LEFT}",
+            "right":        "#{RIGHT}",
+            "up":           "#{UP}",
+            "down":         "#{DOWN}",
+            "maximize":     "#{UP}",
+            "minimize":     "#{DOWN}",
+            "top-left":     "#{LEFT}#{UP}",
+            "top-right":    "#{RIGHT}#{UP}",
+            "bottom-left":  "#{LEFT}#{DOWN}",
+            "bottom-right": "#{RIGHT}#{DOWN}",
+        }
+        direction_lower = direction.lower().strip()
+        keys = key_map.get(direction_lower)
+        if not keys:
+            return ActionResult(
+                success=False,
+                message=f"Unknown snap direction: {direction}. Use: left, right, maximize, minimize, top-left, top-right, bottom-left, bottom-right.",
+            )
+        try:
+            self._send_keys(keys)
+            return ActionResult(success=True, message=f"Window snapped {direction_lower}.")
+        except Exception as e:
+            logger.error("Snap window failed: %s", e)
+            return ActionResult(success=False, message=f"I couldn't snap the window {direction_lower}.", error=str(e))
+
+    # ── Taskbar Pin/Unpin ────────────────────────────────────────────────
+
+    def pin_to_taskbar(self, app_name: str) -> ActionResult:
+        """Pin an application to the Windows taskbar using PowerShell COM."""
+        try:
+            # Find the application path first
+            app_path = self._find_app_path(app_name)
+            if not app_path:
+                return ActionResult(
+                    success=False,
+                    message=f"I couldn't find {app_name} to pin it to the taskbar.",
+                )
+
+            # Use Shell.Application COM verb
+            ps_cmd = (
+                f"$shell = New-Object -ComObject Shell.Application; "
+                f"$folder = $shell.NameSpace((Split-Path '{app_path}')); "
+                f"$item = $folder.ParseName((Split-Path '{app_path}' -Leaf)); "
+                f"$verb = $item.Verbs() | Where-Object {{$_.Name -match 'Pin to tas'}}; "
+                f"if ($verb) {{ $verb.DoIt() }}"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            return ActionResult(success=True, message=f"Pinned {app_name} to the taskbar.")
+        except Exception as e:
+            logger.error("Pin to taskbar failed: %s", e)
+            return ActionResult(success=False, message=f"I couldn't pin {app_name} to the taskbar.", error=str(e))
+
+    def unpin_from_taskbar(self, app_name: str) -> ActionResult:
+        """Unpin an application from the Windows taskbar."""
+        try:
+            app_path = self._find_app_path(app_name)
+            if not app_path:
+                return ActionResult(
+                    success=False,
+                    message=f"I couldn't find {app_name} to unpin it.",
+                )
+
+            ps_cmd = (
+                f"$shell = New-Object -ComObject Shell.Application; "
+                f"$folder = $shell.NameSpace((Split-Path '{app_path}')); "
+                f"$item = $folder.ParseName((Split-Path '{app_path}' -Leaf)); "
+                f"$verb = $item.Verbs() | Where-Object {{$_.Name -match 'Unpin from tas'}}; "
+                f"if ($verb) {{ $verb.DoIt() }}"
+            )
+            subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            return ActionResult(success=True, message=f"Unpinned {app_name} from the taskbar.")
+        except Exception as e:
+            logger.error("Unpin from taskbar failed: %s", e)
+            return ActionResult(success=False, message=f"I couldn't unpin {app_name}.", error=str(e))
+
+    # ── Internal: SendKeys via PowerShell ────────────────────────────────
+
+    @staticmethod
+    def _send_keys(keys: str) -> None:
+        """Send keyboard shortcuts via PowerShell's SendKeys (WScript.Shell)."""
+        ps_cmd = (
+            f"Add-Type -AssemblyName System.Windows.Forms; "
+            f"[System.Windows.Forms.SendKeys]::SendWait('{keys}')"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
