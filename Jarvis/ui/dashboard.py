@@ -31,6 +31,7 @@ from Jarvis.config import (
 
 # ── Helper: get the project root (where run_jarvis.bat lives) ────────────────
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ASSETS_DIR = os.path.join(PROJECT_ROOT, "Jarvis", "assets")
 
 def _active_model_name():
     return {
@@ -130,20 +131,22 @@ class DonutChart(QWidget):
 
 
 class GlassmorphicFrame(QFrame):
-    """QFrame with glassmorphic look."""
+    """QFrame with extreme glassmorphic look."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"""
             QFrame {{
-                background: rgba(22, 27, 34, 0.65);
-                border: 1px solid rgba(255, 255, 255, 0.06);
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-top: 1px solid rgba(255, 255, 255, 0.35);
+                border-left: 1px solid rgba(255, 255, 255, 0.25);
                 border-radius: {dt.RADIUS_LG}px;
             }}
         """)
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(30)
-        shadow.setColor(QColor(0, 0, 0, 80))
-        shadow.setOffset(0, 4)
+        shadow.setBlurRadius(40)
+        shadow.setColor(QColor(0, 0, 0, 120))
+        shadow.setOffset(0, 10)
         self.setGraphicsEffect(shadow)
 
 
@@ -181,6 +184,53 @@ class SidebarButton(QPushButton):
 #  Main Dashboard
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class DashRoot(QWidget):
+    """Root widget that paints a full-cover background image."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("DashRoot")
+        self._bg_pixmap = None
+        img_path = os.path.join(ASSETS_DIR, "bg.png")
+        if os.path.isfile(img_path):
+            from PyQt6.QtGui import QPixmap
+            self._bg_pixmap = QPixmap(img_path)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        rect = self.rect()
+
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(rect), dt.RADIUS_LG, dt.RADIUS_LG)
+        p.setClipPath(path)
+
+        if self._bg_pixmap and not self._bg_pixmap.isNull():
+            # Scale to cover (crop excess)
+            pm_size = self._bg_pixmap.size()
+            x_ratio = rect.width() / pm_size.width()
+            y_ratio = rect.height() / pm_size.height()
+            scale = max(x_ratio, y_ratio)
+            
+            scaled_w = int(pm_size.width() * scale)
+            scaled_h = int(pm_size.height() * scale)
+            x_off = (rect.width() - scaled_w) // 2
+            y_off = (rect.height() - scaled_h) // 2
+            
+            p.drawPixmap(x_off, y_off, scaled_w, scaled_h, self._bg_pixmap)
+            
+            # Apply opacity overlay to dim the background
+            if hasattr(self, '_overlay_alpha'):
+                p.fillRect(rect, QColor(0, 0, 0, int(self._overlay_alpha * 255)))
+        else:
+            p.fillRect(rect, QColor("#050510"))
+
+        # Draw border
+        p.setClipping(False)
+        p.setPen(QPen(QColor(255, 255, 255, 40), 1))
+        p.drawPath(path)
+        p.end()
+
 class JarvisDashboard(QMainWindow):
     """Primary Jarvis Windows App — glassmorphic dashboard."""
 
@@ -193,6 +243,8 @@ class JarvisDashboard(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._drag_pos = None
         self._assistant_proc = None
+
+        self._opacity_overlay = 0.05 # Initial extreme transparency for cards
 
         screen = QApplication.primaryScreen().geometry() if QApplication.primaryScreen() else None
         if screen:
@@ -208,20 +260,14 @@ class JarvisDashboard(QMainWindow):
     # ── UI Construction ──────────────────────────────────────────────────────
 
     def _build_ui(self):
-        root = QWidget()
-        root.setObjectName("DashRoot")
-        root.setStyleSheet(f"""
-            QWidget#DashRoot {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-                    stop:0 #0a0e17, stop:0.4 #0e1420, stop:0.7 #111927, stop:1 #0d1220);
-                border-radius: {dt.RADIUS_LG}px;
-                border: 1px solid {dt.BORDER_SUBTLE};
-            }}
+        self.root = DashRoot()
+        self.root._overlay_alpha = 0.2  # Default 20% dark overlay
+        self.root.setStyleSheet(f"""
             QLabel {{ color: {dt.TEXT_PRIMARY}; font-family: '{dt.FONT_FAMILY}'; }}
         """)
-        self.setCentralWidget(root)
+        self.setCentralWidget(self.root)
 
-        outer = QVBoxLayout(root)
+        outer = QVBoxLayout(self.root)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
@@ -260,8 +306,8 @@ class JarvisDashboard(QMainWindow):
         bar.setFixedHeight(50)
         bar.setStyleSheet(f"""
             QFrame {{
-                background: rgba(10, 14, 23, 0.92);
-                border-bottom: 1px solid {dt.BORDER_SUBTLE};
+                background: rgba(0, 0, 0, 0.4);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
                 border-top-left-radius: {dt.RADIUS_LG}px;
                 border-top-right-radius: {dt.RADIUS_LG}px;
             }}
@@ -269,7 +315,7 @@ class JarvisDashboard(QMainWindow):
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(16, 0, 12, 0)
 
-        brand = QLabel("⫸  Jarvis AI")
+        brand = QLabel("")
         brand.setFont(QFont(dt.FONT_FAMILY, 13, QFont.Weight.Bold))
         brand.setStyleSheet(f"color: {dt.TEXT_PRIMARY}; border: none; background: transparent;")
         layout.addWidget(brand)
@@ -319,8 +365,8 @@ class JarvisDashboard(QMainWindow):
         sidebar.setFixedWidth(200)
         sidebar.setStyleSheet(f"""
             QFrame {{
-                background: rgba(13, 17, 23, 0.85);
-                border-right: 1px solid {dt.BORDER_SUBTLE};
+                background: rgba(0, 0, 0, 0.25);
+                border-right: 1px solid rgba(255, 255, 255, 0.1);
                 border-bottom-left-radius: {dt.RADIUS_LG}px;
             }}
         """)
@@ -328,7 +374,7 @@ class JarvisDashboard(QMainWindow):
         layout.setContentsMargins(10, 16, 10, 16)
         layout.setSpacing(4)
 
-        hub = QLabel("  🤖  AI Hub\n        v2.1.0")
+        hub = QLabel("  🤖  Swara AI\n        v2.1.0")
         hub.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_BODY, QFont.Weight.Bold))
         hub.setStyleSheet(f"color: {dt.TEXT_PRIMARY}; margin-bottom: 12px;")
         layout.addWidget(hub)
@@ -382,17 +428,17 @@ class JarvisDashboard(QMainWindow):
     # ── Launch Assistant ─────────────────────────────────────────────────────
 
     def _launch_assistant(self):
-        bat = os.path.join(PROJECT_ROOT, "run_jarvis.bat")
-        if os.path.isfile(bat):
-            self._assistant_proc = subprocess.Popen(
-                ["cmd", "/c", "start", "Jarvis Assistant", bat],
-                cwd=PROJECT_ROOT, creationflags=subprocess.CREATE_NEW_CONSOLE
-            )
-        else:
-            self._assistant_proc = subprocess.Popen(
-                [sys.executable, "-m", "Jarvis.main"],
-                cwd=PROJECT_ROOT, creationflags=subprocess.CREATE_NEW_CONSOLE
-            )
+        # We want to launch the main.py script with the --assistant flag
+        # to open the voice orb window.
+        python_exe = sys.executable
+        script_path = os.path.join(PROJECT_ROOT, "Jarvis", "main.py")
+        
+        # Use subprocess to launch a new process for the assistant
+        subprocess.Popen(
+            [python_exe, script_path, "--assistant"],
+            cwd=PROJECT_ROOT,
+            creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+        )
 
     # ══════════════════════════════════════════════════════════════════════════
     #  PAGE: Home
@@ -444,7 +490,7 @@ class JarvisDashboard(QMainWindow):
         hl.addLayout(badge_row)
 
         model_name = _active_model_name()
-        title = QLabel(f"{model_name} is listening...")
+        title = QLabel("Ready to assist you.")
         title.setFont(QFont(dt.FONT_FAMILY, 24, QFont.Weight.Bold))
         title.setStyleSheet("color: white; border: none; background: transparent;")
         hl.addWidget(title)
@@ -510,22 +556,51 @@ class JarvisDashboard(QMainWindow):
 
         layout.addLayout(stats_row)
 
-        # ── Quick Start Services ──
+        # ── Quick Start Services Header & Opacity Slider ──
+        qs_row = QHBoxLayout()
         qs = QLabel("Quick Start Services")
         qs.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_H2, QFont.Weight.Bold))
-        layout.addWidget(qs)
+        qs_row.addWidget(qs)
+        
+        qs_row.addStretch()
+        op_lbl = QLabel("Background Dimming:")
+        op_lbl.setStyleSheet(f"color: {dt.TEXT_SECONDARY}; font-size: {dt.FONT_SIZE_SMALL}pt;")
+        qs_row.addWidget(op_lbl)
+        
+        from PyQt6.QtWidgets import QSlider
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(0, 90)
+        self.opacity_slider.setValue(20) # 20% initial dimming
+        self.opacity_slider.setFixedWidth(120)
+        self.opacity_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.opacity_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{
+                border-radius: 2px; height: 4px; background: rgba(255,255,255,0.2);
+            }}
+            QSlider::handle:horizontal {{
+                background: {dt.ACCENT}; width: 12px; height: 12px;
+                margin: -4px 0; border-radius: 6px;
+            }}
+        """)
+        self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        qs_row.addWidget(self.opacity_slider)
+        
+        layout.addLayout(qs_row)
 
         svc_row = QHBoxLayout()
         svc_row.setSpacing(16)
         for icon, name, desc, color in [
-            ("🎨", "Image Generation", "Create images from text descriptions using DALL-E 3.", "#e040fb"),
-            ("⟨/⟩", "Code Assistant", "Get help with programming, debugging, and review.", "#58a6ff"),
-            ("🌐", "Web Search", "Search the web for real-time information and news.", "#ffab40"),
+            ("🎨", "Image Generation", "Generate images instantly using AI.", "#e040fb"),
+            ("⟨/⟩", "Code Assistant", "Launch voice assistant tailored for coding.", "#58a6ff"),
+            ("🌐", "Web Search", "Search the web for real-time information.", "#ffab40"),
         ]:
             card = GlassmorphicFrame()
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             card.setFixedHeight(130)
             card.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            
+            # Make the card clickable
+            card.mousePressEvent = lambda e, n=name: self._handle_quick_start(n)
             cl = QVBoxLayout(card)
             cl.setContentsMargins(16, 16, 16, 16)
 
@@ -552,6 +627,100 @@ class JarvisDashboard(QMainWindow):
         layout.addStretch()
         page.setWidget(content)
         return page
+
+    # ── Utilities ────────────────────────────────────────────────────────────
+    
+    def _on_opacity_changed(self, value):
+        alpha = value / 100.0
+        self.root._overlay_alpha = alpha
+        self.root.update()
+
+    def _handle_quick_start(self, name):
+        if name == "Image Generation":
+            self._do_image_gen()
+        elif name == "Code Assistant":
+            self._do_code_assistant()
+        elif name == "Web Search":
+            self._do_web_search()
+
+    def _do_image_gen(self):
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox, QDialog, QVBoxLayout, QLabel
+        from PyQt6.QtGui import QPixmap
+        import requests
+        
+        query, ok = QInputDialog.getText(self, "Image Generation", "Enter image prompt:")
+        if ok and query:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Generating Image...")
+            msg.setText("Please wait while the image is generated...")
+            msg.setStandardButtons(QMessageBox.StandardButton.NoButton)
+            msg.show()
+            QApplication.processEvents()
+            
+            try:
+                # Use Pollinations AI free tier for instant generation as high quality fallback
+                url = f"https://image.pollinations.ai/prompt/{query.replace(' ', '%20')}?width=512&height=512&nologo=true"
+                resp = requests.get(url, timeout=15)
+                msg.accept()
+                
+                if resp.status_code == 200:
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(resp.content)
+                    d = QDialog(self)
+                    d.setWindowTitle("Generated Image")
+                    l = QVBoxLayout(d)
+                    img = QLabel(); img.setPixmap(pixmap); img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    txt = QLabel(f'"{query}"'); txt.setStyleSheet("color: white;"); txt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    l.addWidget(img); l.addWidget(txt)
+                    d.setStyleSheet(f"background: {dt.BG_BASE};")
+                    d.exec()
+                else:
+                    QMessageBox.warning(self, "Error", "Failed to generate image.")
+            except Exception as e:
+                msg.accept()
+                QMessageBox.warning(self, "Error", f"Could not generate image: {e}")
+
+    def _do_code_assistant(self):
+        from PyQt6.QtWidgets import QInputDialog
+        models = ["gemini-2.0-flash", "llama-3.3-70b-versatile", "gpt-4o", "llama3.2:3b"]
+        model, ok = QInputDialog.getItem(self, "Code Assistant", "Select LLM Model:", models, 0, False)
+        if ok and model:
+            import os
+            os.environ["GEMINI_MODEL"] = model
+            os.environ["GROQ_MODEL"] = model
+            os.environ["OLLAMA_MODEL"] = model
+            self._launch_assistant()
+
+    def _do_web_search(self):
+        from PyQt6.QtWidgets import QInputDialog, QMessageBox
+        from Jarvis.core.web_search import web_search
+        
+        query, ok = QInputDialog.getText(self, "Web Search", "Enter search query:")
+        if ok and query:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Searching...")
+            msg.setText("Please wait while Jarvis searches the web...")
+            msg.setStandardButtons(QMessageBox.StandardButton.NoButton)
+            msg.show()
+            QApplication.processEvents()
+            
+            resp = web_search(query, max_results=5)
+            msg.accept()
+            
+            if resp.error:
+                QMessageBox.critical(self, "Search Error", resp.error)
+            elif resp.results:
+                text = f"<h3 style='color: white;'>Results for: {query}</h3>"
+                for r in resp.results:
+                    text += f"<b><a href='{r.url}' style='color: {dt.INFO};'>{r.title}</a></b><br><span style='color: {dt.TEXT_SECONDARY};'>{r.snippet}</span><br><br>"
+                res_box = QMessageBox(self)
+                res_box.setWindowTitle("Web Search Results")
+                res_box.setTextFormat(Qt.TextFormat.RichText)
+                res_box.setText(text)
+                res_box.setStyleSheet(f"QMessageBox {{ background: {dt.BG_BASE}; color: {dt.TEXT_PRIMARY}; }}")
+                res_box.exec()
+            else:
+                QMessageBox.information(self, "Web Search", "No results found.")
 
     # ══════════════════════════════════════════════════════════════════════════
     #  PAGE: Models (Cloud Providers)

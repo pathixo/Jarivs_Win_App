@@ -544,10 +544,10 @@ class MainWindow(QMainWindow):
 
     def _on_playback_state_changed(self, state):
         """Triggered when media player state changes (Stopped, Playing, Paused)."""
-        # We handle transitions back to StoppedState as triggers for the next file
-        if state == QMediaPlayer.PlaybackState.StoppedState:
-            # Short delay to ensure status is updated and we're not stuck in a race
-            QTimer.singleShot(50, self._check_queue_after_stop)
+        # We rely ONLY on EndOfMedia (mediaStatusChanged) to prevent race conditions
+        # that cause audio stuttering when multiple audio chunks are queued.
+        if state == QMediaPlayer.PlaybackState.StoppedState and not self._audio_queue:
+            self._is_playing_audio = False
 
     def _on_media_status_changed(self, status):
         """Triggered when media status changes (EndOfMedia, LoadedMedia, etc)."""
@@ -559,14 +559,6 @@ class MainWindow(QMainWindow):
         """Triggered when a player error occurs."""
         print(f"MediaPlayer Error ({error}): {error_str}")
         self._play_next_in_queue()
-
-    def _check_queue_after_stop(self):
-        """Check if we stopped but still have items in the queue."""
-        # If stopped and not playing anything else, try the next one
-        if self.player.playbackState() == QMediaPlayer.PlaybackState.StoppedState and self._audio_queue:
-            self._play_next_in_queue()
-        elif not self._audio_queue:
-            self._is_playing_audio = False
 
     def closeEvent(self, event):
         """Minimize to tray instead of quitting."""

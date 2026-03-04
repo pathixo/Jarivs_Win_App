@@ -13,13 +13,23 @@ from Jarvis.input.stt_router import STTRouter
 from Jarvis.input.audio_processor import AudioProcessor
 from Jarvis.core.language_detector import LanguageDetector
 
+# Porcupine wake word detection (optional - graceful fallback if not available)
+try:
+    import pvporcupine
+    PORCUPINE_AVAILABLE = True
+except ImportError:
+    pvporcupine = None
+    PORCUPINE_AVAILABLE = False
+    
+
 class Listener(QObject):
-    """Autonomous voice listener with VAD, STT routing, and barge-in support."""
+    """Autonomous voice listener with wake word, VAD, STT routing, and barge-in support."""
 
     # ── Qt Signals ───────────────────────────────────────────────────────────
     command_received  = pyqtSignal(str)   # Emitted with transcribed text
-    state_changed     = pyqtSignal(str)   # "listening" | "processing" | "waiting" | "paused"
+    state_changed     = pyqtSignal(str)   # "listening" | "processing" | "waiting" | "paused" | "hotword"
     barge_in_detected = pyqtSignal()      # User spoke during TTS playback
+    wake_word_detected = pyqtSignal()     # Wake word "Jarvis" detected
 
     # ── Audio Constants ──────────────────────────────────────────────────────
     FORMAT             = pyaudio.paInt16
@@ -30,6 +40,7 @@ class Listener(QObject):
     MIN_SPEECH_DURATION = 0.3            # Ignore clips shorter than this
     SILENCE_DURATION   = 0.8            # Silence before ending recording
     BARGE_IN_SPEECH_MS = 300            # ms of sustained speech to trigger barge-in
+    HOTWORD_TIMEOUT    = 5.0            # Seconds to wait for speech after wake word
 
     def __init__(self):
         super().__init__()
@@ -48,6 +59,11 @@ class Listener(QObject):
         
         # Initialize VAD engine
         self._vad = create_vad(VAD_ENGINE)
+        
+        # Initialize Porcupine wake word engine (optional)
+        self._porcupine = None
+        self._hotword_enabled = False
+        self._init_porcupine()
         
         # Initialize STT Router (replaces subprocess worker)
         self._stt_router = STTRouter(
@@ -68,6 +84,32 @@ class Listener(QObject):
             fft_size=512,
             num_bands=32
         )
+    
+    def _init_porcupine(self):
+        """Initialize Porcupine wake word detection if API key is available."""
+        if not PORCUPINE_AVAILABLE:
+            print("[Hotword] Porcupine not installed. Using VAD-only mode.")
+            return
+            
+        if not PORCUPINE_ACCESS_KEY:
+            print("[Hotword] PORCUPINE_ACCESS_KEY not set. Using VAD-only mode.")
+            return
+        
+        try:
+            # Use built-in "jarvis" wake word
+            self._porcupine = pvporcupine.create(
+                access_key=PORCUPINE_ACCESS_KEY,
+                keywords=["jarvis"],
+                sensitivities=[0.5]  # 0.0-1.0, higher = more sensitive
+            )
+            self._hotword_enabled = True
+            # Porcupine requires specific frame length
+            self._porcupine_frame_length = self._porcupine.frame_length
+            print(f"[Hotword] Porcupine initialized. Wake word: 'Jarvis' (frame_length={self._porcupine_frame_length})")
+        except Exception as e:
+            print(f"[Hotword] Porcupine init failed: {e}. Using VAD-only mode.")
+            self._porcupine = None
+            self._hotword_enabled = False
 
     def start(self):
         self.listening = True
@@ -79,6 +121,17 @@ class Listener(QObject):
         self.listening = False
         self._close_stream()
         self._stt_router.close()
+        # Clean up Porcupine
+        if self._porcupine is not None:
+            try:
+                self._porcupine.delete()
+            except Exception:
+                pass
+            self._porcupine = None
+    
+    def is_hotword_enabled(self) -> bool:
+        """Check if hotword detection is active."""
+        return self._hotword_enabled and self._porcupine is not None
 
     def set_processing(self, is_processing):
         self._is_processing = is_processing
@@ -209,8 +262,14 @@ class Listener(QObject):
                 print("Cannot open microphone. Text-only mode.")
                 return
 
-            print(f"Autonomous listener active (VAD={VAD_ENGINE}, STT={STT_PROVIDER}).")
-            self.state_changed.emit("waiting")
+            mode_info = f"VAD={VAD_ENGINE}, STT={STT_PROVIDER}"
+            if self._hotword_enabled:
+                mode_info = f"Hotword=Jarvis, {mode_info}"
+                print(f"Autonomous listener active ({mode_info}). Say 'Jarvis' to activate.")
+                self.state_changed.emit("hotword")
+            else:
+                print(f"Autonomous listener active ({mode_info}). Always listening.")
+                self.state_changed.emit("waiting")
 
             while self.listening:
                 try:
@@ -228,6 +287,22 @@ class Listener(QObject):
                             time.sleep(1)
                             continue
 
+                    # ── Hotword Detection Mode ──────────────────────────────
+                    if self._hotword_enabled:
+                        if self._wait_for_hotword():
+                            # Wake word detected! Now record the command
+                            self.wake_word_detected.emit()
+                            self.state_changed.emit("listening")
+                            frames = self._record_after_hotword()
+                            if frames:
+                                self.state_changed.emit("processing")
+                                self._transcribe(frames)
+                            # Go back to hotword waiting mode
+                            self.state_changed.emit("hotword")
+                            self._vad.reset()
+                        continue
+
+                    # ── VAD-only Mode (no hotword) ──────────────────────────
                     try:
                         data = self._stream.read(self.CHUNK, exception_on_overflow=False)
                     except Exception:
@@ -307,6 +382,118 @@ class Listener(QObject):
         except Exception as e:
             print(f"Listener CRITICAL: {e}")
             logging.error(f"Listener CRITICAL: {e}", exc_info=True)
+
+    def _wait_for_hotword(self) -> bool:
+        """
+        Wait for Porcupine to detect the wake word "Jarvis".
+        
+        Returns:
+            True if wake word detected, False if listener stopped or error
+        """
+        if self._porcupine is None:
+            return False
+        
+        try:
+            # Porcupine needs exactly frame_length samples (512 for 16kHz)
+            frame_length = self._porcupine.frame_length
+            
+            # Read audio frame (Porcupine expects int16 samples)
+            data = self._stream.read(frame_length, exception_on_overflow=False)
+            if not data:
+                return False
+            
+            # Convert bytes to int16 array
+            pcm = np.frombuffer(data, dtype=np.int16)
+            
+            # Process with Porcupine
+            keyword_index = self._porcupine.process(pcm)
+            
+            if keyword_index >= 0:
+                print(f"[Hotword] Wake word 'Jarvis' detected!")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            if "Input overflow" not in str(e):
+                logging.debug(f"Hotword detection error: {e}")
+            return False
+
+    def _record_after_hotword(self):
+        """
+        Record speech after wake word detection.
+        Uses VAD to detect when user starts speaking and when they stop.
+        
+        Returns:
+            List of audio frames or None if timeout/no speech
+        """
+        frames = []
+        speech_started = False
+        speech_start_time = None
+        silence_start = None
+        timeout_start = time.time()
+        
+        print("[Hotword] Listening for command...")
+        
+        while True:
+            # Check for timeout (no speech after wake word)
+            if not speech_started and (time.time() - timeout_start) > self.HOTWORD_TIMEOUT:
+                print("[Hotword] Timeout - no speech detected after wake word")
+                return None
+            
+            try:
+                data = self._stream.read(self.CHUNK, exception_on_overflow=False)
+            except Exception:
+                break
+            
+            if not data:
+                continue
+            
+            # Process audio for visualization
+            try:
+                self.audio_processor.process_chunk(data)
+            except Exception:
+                pass
+            
+            # Use VAD to detect speech
+            try:
+                is_speech = self._vad.is_speech(data, self.RATE)
+            except Exception:
+                is_speech = False
+            
+            if is_speech:
+                if not speech_started:
+                    speech_started = True
+                    speech_start_time = time.time()
+                    print("[Hotword] Speech detected, recording...")
+                
+                frames.append(data)
+                silence_start = None
+                
+                # Max duration check
+                if len(frames) * self.CHUNK / self.RATE > self.MAX_DURATION:
+                    break
+            else:
+                if speech_started:
+                    frames.append(data)  # Include trailing silence
+                    
+                    if silence_start is None:
+                        silence_start = time.time()
+                    elif time.time() - silence_start > self.SILENCE_DURATION:
+                        # Enough silence, stop recording
+                        break
+        
+        if not frames or not speech_started:
+            return None
+        
+        duration = len(frames) * self.CHUNK / self.RATE
+        print(f"[Hotword] Recorded: {duration:.1f}s, {len(frames)} chunks")
+        
+        if duration < self.MIN_SPEECH_DURATION:
+            print("[Hotword] Too short, skipping.")
+            return None
+        
+        return frames
 
     def _record_until_silence(self, initial_chunk):
         """Record speech until silence is detected (using VAD engine)."""
