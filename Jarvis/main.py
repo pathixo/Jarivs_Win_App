@@ -7,6 +7,7 @@ import traceback
 # Silence FFmpeg / QtMultimedia logs via env vars (must be before any Qt/Multimedia imports)
 os.environ["QT_LOGGING_RULES"] = "qt.multimedia.ffmpeg.debug=false;qt.multimedia.ffmpeg.warning=false;qt.multimedia.ffmpeg.info=false"
 os.environ["FFREPORT"] = "file=/dev/null"  # Suppress FFmpeg report generation
+os.environ["AV_LOG_LEVEL"] = "quiet"       # Suppress libavformat bitrate warnings
 
 # Add parent directory to sys.path FIRST (before any Jarvis imports)
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +40,7 @@ from PyQt6.QtMultimedia import QMediaPlayer
 from Jarvis.ui.window import MainWindow
 from Jarvis.ui.tray import JarvisTrayIcon
 from Jarvis.ui.settings_window import SettingsWindow
+from Jarvis.ui.dashboard import JarvisDashboard
 from Jarvis.core.orchestrator import Orchestrator
 from Jarvis.core import colors as clr
 from Jarvis.core.terminal_bridge import get_terminal_bridge
@@ -68,6 +70,14 @@ def main():
         if os.path.exists(icon_path):
             app.setWindowIcon(QIcon(icon_path))
 
+        # Check for --assistant flag
+        if "--assistant" not in sys.argv:
+            # Launch Dashboard as primary interface
+            dashboard = JarvisDashboard()
+            dashboard.show()
+            sys.exit(app.exec())
+
+        # ── Assistant (Voice Orb) Mode ──────────────────────────────────
         worker = Worker()
 
         # Create and show main GUI window

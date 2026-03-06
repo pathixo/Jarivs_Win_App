@@ -111,6 +111,17 @@ class MemoryEngine:
 
     # ── Explicit Memory ──────────────────────────────────────────────────
 
+    def try_explicit_save(self, user_text: str) -> Optional[str]:
+        """
+        Check if user text contains an explicit memory request and save it.
+        Returns the extracted fact string if saved, or None.
+        """
+        fact = self.check_explicit_memory(user_text)
+        if fact:
+            success = self.add_explicit(fact, context=f"User said: {user_text}")
+            return fact if success else None
+        return None
+
     def check_explicit_memory(self, user_text: str) -> Optional[str]:
         """
         Check if user text contains an explicit memory request.

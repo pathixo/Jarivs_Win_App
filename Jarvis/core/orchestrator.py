@@ -35,6 +35,7 @@ from Jarvis.core.system import (
 )
 from Jarvis.core.terminal_bridge import get_terminal_bridge
 from Jarvis.core.intent_engine import IntentEngine, IntentResult
+from Jarvis.core.web_search import web_search, format_search_results
 from Jarvis.config import (
     GROQ_API_KEY, GROQ_INTENT_MODEL,
     INTENT_ENGINE_ENABLED, INTENT_CONFIDENCE_THRESHOLD,
@@ -218,6 +219,10 @@ class Orchestrator:
         self._stt_language = "auto"  # Track current STT language
         self._memory_engine = None   # Set via set_memory_engine() after init
         
+        # Web search context (used to enrich LLM responses with real-time info)
+        self._pending_search_context = None
+        self._pending_search_query = None
+        
         self.confirmation_mode = False  # Ask before running any shell command
         self.wsl_mode = False           # Run risky/all commands in WSL
         self.seamless_mode = True       # AUTO-SWITCH: Use cloud (Gemini/Groq) if local is slow
@@ -388,6 +393,11 @@ class Orchestrator:
             direct_result = self._detect_media_or_search_intent(command_text)
             if direct_result is not None:
                 return direct_result
+
+            # 8c. Agent routing for complex multi-step tasks
+            agent_result = self._detect_agent_task(command_text)
+            if agent_result is not None:
+                return agent_result
 
             # 8b. Direct shell command detection
             shell_cmd = self._detect_shell_command(command_text)
@@ -718,16 +728,62 @@ class Orchestrator:
                 return _do_play(query)
 
         # ── 3. Google/web search patterns ────────────────────────────────
-        # "search for X", "google X", "search X on google"
+        # "search for X", "google X", "search X on google", "what is X", "who is X"
+        # Pattern 1: Explicit search commands
         google_match = re.search(
             r"(?:search\s+(?:for\s+)?|google\s+|look up\s+)(.+?)(?:\s+on\s+google)?$",
             tl, re.IGNORECASE
         )
+        # Pattern 2: Factual questions that need web search
+        factual_match = re.search(
+            r"^(?:what(?:'s|\s+is|\s+are)|who(?:'s|\s+is|\s+are)|when(?:'s|\s+is|\s+was)|where(?:'s|\s+is|\s+are)|how\s+(?:much|many|long|old|far)|latest|current|today'?s?)\s+(.+?)(?:\?)?$",
+            tl, re.IGNORECASE
+        )
+        
+        search_query = None
         if google_match:
-            query = google_match.group(1).strip()
-            if query and not re.search(r"youtube|spotify", query):
-                clr.print_info(f"  Google search bypass: {query}")
-                return _do_search_google(query)
+            search_query = google_match.group(1).strip()
+        elif factual_match:
+            # For factual questions, use the whole question as query
+            search_query = t
+        
+        if search_query and not re.search(r"youtube|spotify", search_query.lower()):
+            # Check if this looks like a question that needs real-time info
+            needs_realtime = any(kw in tl for kw in [
+                "latest", "current", "today", "now", "recent", "news",
+                "weather", "price", "stock", "score", "result", "live"
+            ])
+            
+            # Use DuckDuckGo for real search results
+            clr.print_info(f"  Web search: {search_query}")
+            try:
+                response = web_search(search_query, max_results=5, fetch_content=needs_realtime)
+                
+                if response.error:
+                    # Fallback to browser search on error
+                    clr.print_warning(f"  Search API error, opening browser: {response.error}")
+                    return _do_search_google(search_query)
+                
+                if response.answer:
+                    # Instant answer available - return directly
+                    clr.print_info(f"  Instant answer: {response.answer[:100]}...")
+                    return response.answer
+                
+                if response.results:
+                    # Format results for conversational response
+                    formatted = format_search_results(response, include_urls=False)
+                    # Store for LLM to summarize
+                    self._pending_search_context = formatted
+                    self._pending_search_query = search_query
+                    # Return None to let LLM process with context
+                    return None
+                else:
+                    return f"I couldn't find any results for '{search_query}'. Try rephrasing your question."
+                    
+            except Exception as e:
+                clr.print_warning(f"  Web search failed: {e}")
+                # Fallback to browser
+                return _do_search_google(search_query)
 
         # ── 4. Open a website / URL directly ─────────────────────────────
         url_match = re.search(
@@ -742,6 +798,95 @@ class Orchestrator:
             return _do_open_url(raw_url)
 
         # Not handled — fall through to LLM
+        return None
+
+    def _detect_agent_task(self, text: str) -> Optional[str]:
+        """
+        Detect if the user is requesting a complex multi-step task that
+        should be handled by the ReAct or Coding agent.
+        
+        Triggers:
+          - "research ...", "find out ...", "investigate ..."
+          - "write code ...", "create a script ...", "make a program ..."
+          - "help me with ..." (complex tasks)
+          
+        Returns the agent result string if handled, or None to fall through.
+        """
+        t = text.strip()
+        tl = t.lower()
+        
+        # ── Coding Agent Triggers ─────────────────────────────────────────
+        coding_patterns = [
+            r"^(?:write|create|make|generate|build)\s+(?:a\s+)?(?:python\s+)?(?:code|script|program|function)\s+(?:that|to|for|which)\s+(.+)",
+            r"^(?:write|create|make)\s+(?:me\s+)?(?:a\s+)?(?:python|js|javascript|bash|shell)\s+(?:script|program)\s+(?:that|to|for)\s+(.+)",
+            r"^code\s+(?:a\s+)?(?:script|program|function)?\s*(?:that|to|for|which)?\s*(.+)",
+        ]
+        
+        for pattern in coding_patterns:
+            match = re.search(pattern, tl, re.IGNORECASE)
+            if match:
+                task = match.group(1).strip() if match.lastindex else t
+                clr.print_info(f"  [Coding Agent] Task: {task}")
+                
+                try:
+                    from Jarvis.core.coding_agent import CodingAgent
+                    agent = CodingAgent(brain=self.brain, max_iterations=5)
+                    
+                    # Detect language from query
+                    language = "python"  # Default
+                    if any(kw in tl for kw in ["javascript", "js ", "node"]):
+                        language = "javascript"
+                    elif any(kw in tl for kw in ["bash", "shell"]):
+                        language = "shell"
+                    elif "powershell" in tl:
+                        language = "powershell"
+                    
+                    result = agent.run(task, language=language)
+                    
+                    if result.success:
+                        clr.print_info(f"  [Coding Agent] ✓ Code saved to workspace/{result.filename}")
+                        return (
+                            f"I've written the code and saved it to {result.filename}. "
+                            f"It ran successfully. Here's the output:\n{result.final_output[:500] if result.final_output else 'No output.'}"
+                        )
+                    else:
+                        clr.print_warning(f"  [Coding Agent] Code needs debugging: {result.error}")
+                        return (
+                            f"I wrote the code and saved it to {result.filename}, but it needs debugging. "
+                            f"Error: {result.error}. You can find the code in the workspace folder."
+                        )
+                        
+                except Exception as e:
+                    logger.error(f"Coding agent error: {e}")
+                    return None  # Fall back to LLM
+        
+        # ── ReAct Agent Triggers ──────────────────────────────────────────
+        research_patterns = [
+            r"^(?:research|investigate|find out|look into|explore)\s+(.+)",
+            r"^(?:can you|please)?\s*(?:thoroughly|deeply)?\s*(?:research|investigate|analyze)\s+(.+)",
+            r"^(?:i need|give me)\s+(?:a\s+)?(?:comprehensive|detailed|thorough)\s+(?:analysis|report|summary)\s+(?:on|of|about)\s+(.+)",
+        ]
+        
+        for pattern in research_patterns:
+            match = re.search(pattern, tl, re.IGNORECASE)
+            if match:
+                task = match.group(1).strip() if match.lastindex else t
+                clr.print_info(f"  [ReAct Agent] Task: {task}")
+                
+                try:
+                    from Jarvis.core.agent import ReActAgent
+                    agent = ReActAgent(brain=self.brain, tools_instance=self.tools, max_iterations=8)
+                    
+                    result = agent.run(task)
+                    
+                    clr.print_info(f"  [ReAct Agent] Completed in {result.total_time:.1f}s ({len(result.steps)} steps)")
+                    return result.final_answer
+                    
+                except Exception as e:
+                    logger.error(f"ReAct agent error: {e}")
+                    return None  # Fall back to LLM
+        
+        # Not an agent task
         return None
 
     # ── LLM Processing ──────────────────────────────────────────────────────
@@ -872,6 +1017,14 @@ class Orchestrator:
         #  PHASE 3: Conversational Response (Gemini preferred, local fallback)
         # ════════════════════════════════════════════════════════════════════
         # Build the prompt for the conversation model
+        
+        # Check for pending web search context
+        search_context = None
+        if self._pending_search_context:
+            search_context = self._pending_search_context
+            self._pending_search_context = None
+            self._pending_search_query = None
+        
         if execution_results:
             # Summarize what was done so the conversation model can describe it
             exec_summary = "\n".join(execution_results)
@@ -880,6 +1033,16 @@ class Orchestrator:
                 f"I already performed these actions:\n{exec_summary}\n\n"
                 f"Now give a brief, natural conversational response confirming what was done. "
                 f"Be concise (1-2 sentences). Don't repeat the command verbatim."
+            )
+        elif search_context:
+            # Include web search results for the LLM to summarize
+            conv_prompt = (
+                f"The user asked: \"{command_text}\"\n\n"
+                f"Here is relevant information from a web search:\n"
+                f"---\n{search_context}\n---\n\n"
+                f"Based on this information, provide a helpful, conversational answer to the user's question. "
+                f"Be concise and natural (speak as if answering verbally). "
+                f"Cite sources if mentioning specific facts. Don't mention 'the search results' explicitly."
             )
         else:
             # Pure conversation — just pass the user's text
@@ -1012,7 +1175,7 @@ class Orchestrator:
 
         # ── Auto-extract personalization memories (background) ────────
         if self._memory_engine and llm_response:
-            self._memory_engine.auto_extract(command_text, llm_response)
+            self._memory_engine.auto_extract_async(command_text, llm_response)
 
         return "\n".join(final_parts) if final_parts else (llm_response or "Done.")
 
