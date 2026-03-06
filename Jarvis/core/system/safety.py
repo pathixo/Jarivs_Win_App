@@ -55,8 +55,11 @@ RISK_PATTERNS: list[RiskPattern] = [
 
     # YELLOW (HIGH) — major modifications (Requires Confirmation)
     RiskPattern(r"remove-item\s+.*-recurse", RiskLevel.HIGH, "Recursive file deletion"),
-    RiskPattern(r"rm\s+-rf", RiskLevel.HIGH, "Recursive force delete"),
-    RiskPattern(r"del\s+/[sS]", RiskLevel.HIGH, "Recursive delete"),
+    RiskPattern(r"remove-item\s+.*-force",   RiskLevel.HIGH, "Forced file deletion (Remove-Item -Force)"),
+    RiskPattern(r"rm\s+-rf",                 RiskLevel.HIGH, "Recursive force delete"),
+    RiskPattern(r"rm\s+.*-r\b",              RiskLevel.MEDIUM, "Recursive delete (rm -r)"),
+    RiskPattern(r"del\s+/[sS]",              RiskLevel.HIGH, "Recursive delete"),
+    RiskPattern(r"del\s+.*(/[fF].*(/[sS]|/[qQ])|(/[sS]|/[qQ]).*(/[fF]|/[sS]|/[qQ]))", RiskLevel.HIGH, "Recursive force delete (del /f /s /q)"),
     RiskPattern(r"sfc\s+/scannow", RiskLevel.HIGH, "System file checker"),
     RiskPattern(r"stop-service", RiskLevel.HIGH, "Service stop"),
     RiskPattern(r"Set-ExecutionPolicy", RiskLevel.HIGH, "Execution policy change"),

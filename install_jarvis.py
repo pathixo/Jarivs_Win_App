@@ -17,12 +17,34 @@ except ImportError:
     print("PyQt6 is required for the GUI installer. Please install it with: pip install PyQt6")
     sys.exit(1)
 
+def _sanitize_ps_arg(arg: str) -> str:
+    """
+    Wrap a string in PowerShell single-quoted literal syntax.
+    Single quotes are escaped by doubling; $ and backtick are neutralised
+    so they cannot introduce variable expansion or escape sequences.
+    """
+    if not isinstance(arg, str):
+        arg = str(arg)
+    # Escape single quotes (PowerShell single-quote escape)
+    arg = arg.replace("'", "''")
+    # Neutralise $ (variable expansion) and ` (escape char) inside the literal.
+    # Inside single-quoted strings these are already inert in PowerShell, but
+    # we sanitise them anyway as a defence-in-depth measure.
+    arg = arg.replace("`", "``").replace("$", "`$")
+    return f"'{arg}'"
+
+
 def speak_async(text):
     """Uses Windows built-in TTS via PowerShell to speak asynchronously."""
     def _speak():
-        safe_text = text.replace("'", "''")
-        ps_script = f"Add-Type -AssemblyName System.Speech; $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; $synth.Speak('{safe_text}')"
-        subprocess.run(["powershell", "-Command", ps_script], creationflags=subprocess.CREATE_NO_WINDOW)
+        safe_text = _sanitize_ps_arg(text)
+        ps_script = (
+            f"Add-Type -AssemblyName System.Speech; "
+            f"$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$synth.Speak({safe_text})"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                       creationflags=subprocess.CREATE_NO_WINDOW)
     threading.Thread(target=_speak, daemon=True).start()
 
 
@@ -37,6 +59,17 @@ class InstallWorker(QObject):
         self.add_desktop_icon = add_desktop_icon
         self.use_venv = use_venv
         self.source_dir = os.path.dirname(os.path.abspath(__file__))
+        self.log_path = os.path.join(self.install_dir, "Jarvis_install.log")
+
+    def _log(self, message: str):
+        """Append a line to the installer log file."""
+        try:
+            os.makedirs(self.install_dir, exist_ok=True)
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(message + "\n")
+        except Exception:
+            # Never let logging failure break installation
+            pass
 
     def _get_base_python(self):
         """Finds the base system python to avoid venv-in-venv issues."""
@@ -61,6 +94,7 @@ class InstallWorker(QObject):
             line = line.strip()
             if line:
                 self.log_signal.emit(line)
+                self._log(line)
         proc.wait()
         return proc.returncode
 
@@ -69,6 +103,9 @@ class InstallWorker(QObject):
             # ── Step 0: Kill existing Jarvis processes ──
             self.progress.emit(2, "Clearing existing processes...")
             self.log_signal.emit("Ensuring no Jarvis instances are running...")
+            self._log("=== Jarvis integration run started ===")
+            self._log(f"Source directory: {self.source_dir}")
+            self._log(f"Target directory: {self.install_dir}")
             subprocess.run(["taskkill", "/F", "/IM", "pythonw.exe", "/T"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             subprocess.run(["taskkill", "/F", "/IM", "python.exe", "/T", "/FI", f"WINDOWTITLE eq Jarvis*"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             time.sleep(1)
@@ -77,6 +114,7 @@ class InstallWorker(QObject):
             self.progress.emit(5, "Initializing system architecture...")
             self.log_signal.emit(f"Source: {self.source_dir}")
             self.log_signal.emit(f"Target: {self.install_dir}")
+            self._log("Initializing system architecture...")
 
             if not os.path.exists(self.install_dir):
                 os.makedirs(self.install_dir, exist_ok=True)
@@ -85,6 +123,7 @@ class InstallWorker(QObject):
             if os.path.normpath(self.source_dir) != os.path.normpath(self.install_dir):
                 self.progress.emit(10, "Synchronizing core logic...")
                 speak_async("Synchronizing core logic.")
+                self._log("Synchronizing core logic from source to target...")
                 ignore_patterns = shutil.ignore_patterns('.venv', '.git', '__pycache__', '.pytest_cache', 'build', 'dist')
                 items = os.listdir(self.source_dir)
                 for idx, item in enumerate(items):
@@ -95,6 +134,7 @@ class InstallWorker(QObject):
                         continue
                         
                     self.log_signal.emit(f"Syncing: {item}")
+                    self._log(f"Syncing: {item}")
                     if os.path.isdir(s):
                         # Use dirs_exist_ok=True for robust copying in Python 3.8+
                         shutil.copytree(s, d, ignore=ignore_patterns, dirs_exist_ok=True)
@@ -103,6 +143,7 @@ class InstallWorker(QObject):
                     self.progress.emit(10 + int(20 * (idx+1)/len(items)), f"Synchronizing: {item}")
             else:
                 self.log_signal.emit("Running from source. Skipping copy phase.")
+                self._log("Source and target are the same. Skipping copy phase.")
                 self.progress.emit(30, "Source validated.")
 
             # ── Step 3: Environment Setup ──
@@ -114,22 +155,27 @@ class InstallWorker(QObject):
                 venv_path = os.path.join(self.install_dir, ".venv")
                 base_py = self._get_base_python()
                 self.log_signal.emit(f"Using base python: {base_py}")
+                self._log(f"Using base python: {base_py}")
                 
                 # Try standard venv creation
                 ret = self._run_with_log([base_py, "-m", "venv", ".venv"], 40, 55)
                 if ret != 0:
                     self.log_signal.emit("Venv failed. Retrying with fallback...")
+                    self._log("Venv creation failed. Retrying with --without-pip fallback.")
                     ret = self._run_with_log([base_py, "-m", "venv", ".venv", "--without-pip"], 40, 55)
                     if ret == 0:
                         self.log_signal.emit("Venv created without pip. Bootstrapping...")
+                        self._log("Venv created without pip. Bootstrapping ensurepip...")
                         ret = self._run_with_log([os.path.join(venv_path, "Scripts", "python.exe"), "-m", "ensurepip"], 55, 60)
 
                 if ret != 0:
+                    self._log("Neural environment creation failed, aborting.")
                     self.finished.emit(False, "Neural environment creation failed. Try disabling 'Isolated Environment' in settings.")
                     return
                 python_for_pip = os.path.join(venv_path, "Scripts", "python.exe")
             else:
                 self.log_signal.emit("Using system environment as requested.")
+                self._log("Using system environment (no venv).")
                 self.progress.emit(50, "Environment ready.")
 
             # ── Step 4: Dependencies ──
@@ -142,51 +188,97 @@ class InstallWorker(QObject):
             
             if os.path.exists(req_file):
                 self.log_signal.emit("Updating package manager...")
+                self._log(f"Using requirements file: {req_file}")
                 self._run_with_log([python_for_pip, "-m", "pip", "install", "--upgrade", "pip"], 65, 70)
                 
                 self.log_signal.emit("Installing dependencies...")
                 ret = self._run_with_log([python_for_pip, "-m", "pip", "install", "-r", req_file], 70, 90)
+                if ret != 0:
+                    self._log("Dependency installation failed, aborting.")
+                    self.finished.emit(False, "Dependency installation failed. Check Jarvis_install.log for details.")
+                    return
+            else:
+                self._log("No requirements.txt found; skipping dependency installation.")
+
+            # ── Step 4.5: Ensure basic cloud/backend configuration scaffold exists ──
+            env_target = os.path.join(self.install_dir, "Jarvis", ".env")
+            try:
+                if not os.path.exists(os.path.dirname(env_target)):
+                    os.makedirs(os.path.dirname(env_target), exist_ok=True)
+                if not os.path.exists(env_target):
+                    self._log(f"Creating default .env at {env_target}")
+                    with open(env_target, "w", encoding="utf-8") as f:
+                        f.write(
+                            "# Jarvis cloud/backend configuration\n"
+                            "# These values are read by Jarvis/config.py at runtime.\n"
+                            "LLM_PROVIDER=gemini\n"
+                            "GEMINI_API_KEY=\n"
+                            "GEMINI_MODEL=gemini-2.0-flash\n"
+                            "GROQ_API_KEY=\n"
+                            "GROQ_MODEL=llama-3.3-70b-versatile\n"
+                            "GROK_API_KEY=\n"
+                            "GROK_MODEL=grok-3-mini-fast\n"
+                            "\n"
+                            "# Internal company endpoints (replace with your real URLs)\n"
+                            "# JARVIS_API_URL=https://api.yourcompany.com/jarvis\n"
+                            "# JARVIS_DB_URL=https://db.yourcompany.com/jarvis\n"
+                        )
+                else:
+                    self._log(f".env already exists at {env_target}; leaving as-is.")
+            except Exception as env_err:
+                # Log but don't fail the entire install for .env scaffolding problems
+                self._log(f"Warning: failed to scaffold .env file: {env_err}")
 
             # ── Step 5: Finalize ──
             self.progress.emit(95, "Finalizing access points...")
             speak_async("Finalizing access points.")
+            self._log("Finalizing shortcuts and access points.")
             
             launcher_bat = os.path.join(self.install_dir, "run_jarvis.bat")
             icon_file = os.path.join(self.install_dir, "jarvis.ico")
             
             def create_shortcut(target, shortcut_path, working, icon):
-                # Ensure path uses single backslashes for PowerShell or is properly escaped
-                shortcut_path = os.path.normpath(shortcut_path)
-                target = os.path.normpath(target)
-                working = os.path.normpath(working)
-                icon = os.path.normpath(icon)
-                
-                ps = f"""
-                $WshShell = New-Object -ComObject WScript.Shell
-                $Shortcut = $WshShell.CreateShortcut('{shortcut_path}')
-                $Shortcut.TargetPath = '{target}'
-                $Shortcut.WorkingDirectory = '{working}'
-                $Shortcut.IconLocation = '{icon}'
-                $Shortcut.Save()
-                """
-                subprocess.run(["powershell", "-Command", ps], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                # Normalise paths then wrap each in safe single-quoted PS literals
+                # so that injection characters in install_dir cannot escape the string.
+                safe_shortcut = _sanitize_ps_arg(os.path.normpath(shortcut_path))
+                safe_target   = _sanitize_ps_arg(os.path.normpath(target))
+                safe_working  = _sanitize_ps_arg(os.path.normpath(working))
+                safe_icon     = _sanitize_ps_arg(os.path.normpath(icon))
+
+                ps = (
+                    f"$WshShell = New-Object -ComObject WScript.Shell; "
+                    f"$Shortcut = $WshShell.CreateShortcut({safe_shortcut}); "
+                    f"$Shortcut.TargetPath = {safe_target}; "
+                    f"$Shortcut.WorkingDirectory = {safe_working}; "
+                    f"$Shortcut.IconLocation = {safe_icon}; "
+                    f"$Shortcut.Save()"
+                )
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
 
             if self.add_desktop_icon:
                 desktop = os.path.join(os.environ["USERPROFILE"], "Desktop")
                 shortcut_path = os.path.join(desktop, "Jarvis AI.lnk")
                 self.log_signal.emit(f"Creating Desktop shortcut...")
+                self._log(f"Creating Desktop shortcut at: {shortcut_path}")
                 create_shortcut(launcher_bat, shortcut_path, self.install_dir, icon_file)
 
             start_menu = os.path.join(os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs")
             start_shortcut = os.path.join(start_menu, "Jarvis AI.lnk")
             self.log_signal.emit(f"Adding to Start Menu...")
+            self._log(f"Adding Start Menu shortcut at: {start_shortcut}")
             create_shortcut(launcher_bat, start_shortcut, self.install_dir, icon_file)
 
             self.progress.emit(100, "Installation Complete.")
+            self._log("Installation completed successfully.")
             self.finished.emit(True, "Success")
 
         except Exception as e:
             self.log_signal.emit(f"CRITICAL ERROR: {str(e)}")
+            self._log(f"CRITICAL ERROR: {str(e)}")
             self.finished.emit(False, str(e))
 
 

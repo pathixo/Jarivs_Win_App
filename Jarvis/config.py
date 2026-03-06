@@ -21,7 +21,8 @@ def get_app_data_path():
     return path
 
 # Load env from AppData if frozen, else local
-load_dotenv()
+env_path = os.path.join(get_base_path(), ".env")
+load_dotenv(dotenv_path=env_path)
 
 # ─────────────────────── LLM Provider Config ────────────────────────────────
 # Active provider: "ollama" | "gemini" | "groq" | "grok"
@@ -71,10 +72,10 @@ PORCUPINE_MODEL_PATH = os.getenv("PORCUPINE_MODEL_PATH", "")
 WAKE_WORD = "jarvis"
 
 # TTS Voice
-TTS_VOICE = "en-GB-SoniaNeural"
+TTS_VOICE = "en-IE-EmilyNeural"
 
 # Default Persona
-DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", "jarvis")
+DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", "friday")
 
 # ─────────────────────── Pipeline Config ────────────────────────────────────
 # STT Provider: "auto" | "groq" | "local"

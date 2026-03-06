@@ -166,6 +166,7 @@ Rules:
         self,
         brain,  # The Brain instance for LLM calls
         tools_instance=None,  # The Tools instance for file/shell ops
+        action_router=None,   # ActionRouter for sandboxed shell execution
         max_iterations: int = 10,
         timeout: float = 120.0,
     ):
@@ -175,11 +176,18 @@ Rules:
         Args:
             brain: Brain instance for LLM calls
             tools_instance: Tools instance for file/shell operations
+            action_router: ActionRouter instance — required to enable the
+                           run_command tool.  All shell commands are routed
+                           through ActionRouter.execute_shell() so the full
+                           3-Tier Sandbox (SafetyEngine) is always applied.
+                           If None, the run_command tool is NOT registered
+                           (fail-safe: no shell access without the safety gate).
             max_iterations: Maximum think-act-observe cycles
             timeout: Maximum total execution time in seconds
         """
         self.brain = brain
         self.tools_instance = tools_instance
+        self.action_router = action_router
         self.max_iterations = max_iterations
         self.timeout = timeout
         
@@ -229,12 +237,27 @@ Rules:
                 func=self.tools_instance.list_files,
             )
             
-            self.registry.register(
-                name="run_command",
-                description="Execute a shell command. Use for system tasks, running scripts, etc.",
-                parameters={"command": "The shell command to execute"},
-                func=self.tools_instance.execute_terminal_command,
-            )
+            # run_command is only registered when an ActionRouter is available.
+            # All commands are routed through ActionRouter.execute_shell() so
+            # the full 3-Tier Sandbox (SafetyEngine) is enforced:
+            #   RED  (CRITICAL) → always blocked
+            #   YELLOW (HIGH/MEDIUM) → requires user confirmation
+            #   GREEN  (LOW)    → executes directly
+            # Bypassing this gate (e.g. via tools_instance.execute_terminal_command)
+            # would skip safety checks entirely — never do that here.
+            if self.action_router is not None:
+                def _sandboxed_run_command(command: str) -> str:
+                    result = self.action_router.execute_shell(command, from_llm=True)
+                    if result.success:
+                        return f"Output:\n{result.stdout}" if result.stdout else "Command executed."
+                    return f"Error:\n{result.error}" if result.error else f"Error:\n{result.message}"
+
+                self.registry.register(
+                    name="run_command",
+                    description="Execute a shell command. Use for system tasks, running scripts, etc.",
+                    parameters={"command": "The shell command to execute"},
+                    func=_sandboxed_run_command,
+                )
     
     def run(
         self,

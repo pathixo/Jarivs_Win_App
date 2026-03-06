@@ -131,22 +131,21 @@ class DonutChart(QWidget):
 
 
 class GlassmorphicFrame(QFrame):
-    """QFrame with extreme glassmorphic look."""
+    """QFrame with refined world-class glassmorphic look."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"""
             QFrame {{
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                border-top: 1px solid rgba(255, 255, 255, 0.35);
-                border-left: 1px solid rgba(255, 255, 255, 0.25);
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-top: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: {dt.RADIUS_LG}px;
             }}
         """)
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(40)
-        shadow.setColor(QColor(0, 0, 0, 120))
-        shadow.setOffset(0, 10)
+        shadow.setBlurRadius(50)
+        shadow.setColor(QColor(0, 0, 0, 160))
+        shadow.setOffset(0, 12)
         self.setGraphicsEffect(shadow)
 
 
@@ -155,27 +154,33 @@ class GlassmorphicFrame(QFrame):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _NAV_ICONS = {
-    "Home": "🏠", "Models": "🧩", "Local LLMs": "🖥", "API Keys": "🔑", "History": "🕒",
+    "Home": "󰋜", "Models": "󰙨", "Local LLMs": "󰚗", "API Keys": "󰌆", "History": "󰄉",
 }
 
 class SidebarButton(QPushButton):
     def __init__(self, text, icon_char=""):
-        super().__init__(f"  {icon_char}   {text}")
+        # Use icon char if available, otherwise fallback
+        display_text = f"  {icon_char}   {text}" if icon_char else f"    {text}"
+        super().__init__(display_text)
         self.setCheckable(True)
-        self.setFixedHeight(38)
+        self.setFixedHeight(44)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_BODY))
         self.setStyleSheet(f"""
             QPushButton {{
                 color: {dt.TEXT_SECONDARY}; background: transparent;
-                border: none; border-radius: {dt.RADIUS}px;
-                text-align: left; padding-left: 8px;
+                border: none; border-radius: {dt.RADIUS_SM}px;
+                text-align: left; padding-left: 12px;
+                margin: 2px 0;
             }}
             QPushButton:hover {{
-                color: {dt.TEXT_PRIMARY}; background: rgba(255,255,255,0.04);
+                color: {dt.TEXT_PRIMARY}; background: rgba(255,255,255,0.05);
             }}
             QPushButton:checked {{
-                color: {dt.ACCENT}; background: rgba(19, 91, 236, 0.12); font-weight: bold;
+                color: {dt.TEXT_PRIMARY}; background: {dt.ACCENT_BG}; 
+                border-left: 3px solid {dt.ACCENT};
+                padding-left: 9px;
+                font-weight: 600;
             }}
         """)
 
@@ -185,7 +190,7 @@ class SidebarButton(QPushButton):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class DashRoot(QWidget):
-    """Root widget that paints a full-cover background image."""
+    """Root widget that paints a sophisticated background."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("DashRoot")
@@ -201,6 +206,7 @@ class DashRoot(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         rect = self.rect()
 
+        # Rounded corners for the whole window
         path = QPainterPath()
         path.addRoundedRect(QRectF(rect), dt.RADIUS_LG, dt.RADIUS_LG)
         p.setClipPath(path)
@@ -219,32 +225,36 @@ class DashRoot(QWidget):
             
             p.drawPixmap(x_off, y_off, scaled_w, scaled_h, self._bg_pixmap)
             
-            # Apply opacity overlay to dim the background
-            if hasattr(self, '_overlay_alpha'):
-                p.fillRect(rect, QColor(0, 0, 0, int(self._overlay_alpha * 255)))
+            # Apply dark/subtle overlay
+            alpha = getattr(self, '_overlay_alpha', 0.4)
+            p.fillRect(rect, QColor(2, 6, 23, int(alpha * 255)))
         else:
-            p.fillRect(rect, QColor("#050510"))
+            # Fallback sophisticated gradient
+            grad = QLinearGradient(0, 0, rect.width(), rect.height())
+            grad.setColorAt(0, QColor("#020617"))
+            grad.setColorAt(1, QColor("#0f172a"))
+            p.fillRect(rect, grad)
 
-        # Draw border
+        # Draw a very subtle inner glow/border
         p.setClipping(False)
-        p.setPen(QPen(QColor(255, 255, 255, 40), 1))
+        p.setPen(QPen(QColor(255, 255, 255, 20), 1))
         p.drawPath(path)
         p.end()
 
 class JarvisDashboard(QMainWindow):
-    """Primary Jarvis Windows App — glassmorphic dashboard."""
+    """Primary Jarvis Windows App — world-class dashboard."""
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Jarvis AI")
-        self.resize(1280, 820)
-        self.setMinimumSize(1024, 600)
+        self.resize(1280, 840)
+        self.setMinimumSize(1024, 720)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._drag_pos = None
         self._assistant_proc = None
 
-        self._opacity_overlay = 0.05 # Initial extreme transparency for cards
+        self._opacity_overlay = 0.4 # Default dimming for a professional look
 
         screen = QApplication.primaryScreen().geometry() if QApplication.primaryScreen() else None
         if screen:
@@ -261,7 +271,7 @@ class JarvisDashboard(QMainWindow):
 
     def _build_ui(self):
         self.root = DashRoot()
-        self.root._overlay_alpha = 0.2  # Default 20% dark overlay
+        self.root._overlay_alpha = self._opacity_overlay
         self.root.setStyleSheet(f"""
             QLabel {{ color: {dt.TEXT_PRIMARY}; font-family: '{dt.FONT_FAMILY}'; }}
         """)
@@ -303,50 +313,50 @@ class JarvisDashboard(QMainWindow):
 
     def _build_title_bar(self):
         bar = QFrame()
-        bar.setFixedHeight(50)
+        bar.setFixedHeight(dt.HEADER_HEIGHT)
         bar.setStyleSheet(f"""
             QFrame {{
-                background: rgba(0, 0, 0, 0.4);
-                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                background: rgba(2, 6, 23, 0.6);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
                 border-top-left-radius: {dt.RADIUS_LG}px;
                 border-top-right-radius: {dt.RADIUS_LG}px;
             }}
         """)
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(16, 0, 12, 0)
+        layout.setContentsMargins(20, 0, 16, 0)
 
-        brand = QLabel("")
-        brand.setFont(QFont(dt.FONT_FAMILY, 13, QFont.Weight.Bold))
-        brand.setStyleSheet(f"color: {dt.TEXT_PRIMARY}; border: none; background: transparent;")
+        brand = QLabel("JARVIS")
+        brand.setFont(QFont(dt.FONT_FAMILY, 14, QFont.Weight.Black))
+        brand.setStyleSheet(f"color: {dt.TEXT_PRIMARY}; letter-spacing: 2px; border: none; background: transparent;")
         layout.addWidget(brand)
         layout.addStretch()
 
+        search_container = QFrame()
+        search_container.setFixedSize(320, 34)
+        search_container.setStyleSheet(f"background: rgba(255,255,255,0.04); border: 1px solid {dt.BORDER_DEFAULT}; border-radius: 17px;")
+        sl = QHBoxLayout(search_container)
+        sl.setContentsMargins(12, 0, 12, 0)
+        
         search = QLineEdit()
-        search.setPlaceholderText("🔍  Search commands, settings...")
-        search.setFixedSize(280, 30)
-        search.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_SMALL))
-        search.setStyleSheet(f"""
-            QLineEdit {{
-                color: {dt.TEXT_SECONDARY}; background: rgba(255,255,255,0.04);
-                border: 1px solid {dt.BORDER_DEFAULT}; border-radius: 15px; padding: 0 14px;
-            }}
-            QLineEdit:focus {{ border-color: {dt.ACCENT}; color: {dt.TEXT_PRIMARY}; }}
-        """)
-        layout.addWidget(search)
+        search.setPlaceholderText("Search commands or settings...")
+        search.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_BODY))
+        search.setStyleSheet("color: white; background: transparent; border: none;")
+        sl.addWidget(search)
+        layout.addWidget(search_container)
         layout.addStretch()
 
         for char, slot, hover_color in [
-            ("─", self.showMinimized, dt.TEXT_MUTED),
-            ("□", self._toggle_maximize, dt.TEXT_MUTED),
-            ("✕", self.close, dt.ERROR),
+            ("󰖰", self.showMinimized, "rgba(255,255,255,0.1)"),
+            ("󰖲", self._toggle_maximize, "rgba(255,255,255,0.1)"),
+            ("󰖭", self.close, dt.ERROR),
         ]:
             btn = QPushButton(char)
-            btn.setFixedSize(30, 30)
+            btn.setFixedSize(32, 32)
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background: transparent; border: none; color: {dt.TEXT_SECONDARY};
-                    font-size: 13pt; border-radius: 4px;
+                    font-size: 14pt; border-radius: 6px;
                 }}
                 QPushButton:hover {{ background: {hover_color}; color: white; }}
             """)
@@ -362,27 +372,22 @@ class JarvisDashboard(QMainWindow):
 
     def _build_sidebar(self):
         sidebar = QFrame()
-        sidebar.setFixedWidth(200)
+        sidebar.setFixedWidth(dt.SIDEBAR_WIDTH)
         sidebar.setStyleSheet(f"""
             QFrame {{
-                background: rgba(0, 0, 0, 0.25);
-                border-right: 1px solid rgba(255, 255, 255, 0.1);
+                background: rgba(2, 6, 23, 0.4);
+                border-right: 1px solid rgba(255, 255, 255, 0.05);
                 border-bottom-left-radius: {dt.RADIUS_LG}px;
             }}
         """)
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(10, 16, 10, 16)
-        layout.setSpacing(4)
+        layout.setContentsMargins(16, 24, 16, 24)
+        layout.setSpacing(6)
 
-        hub = QLabel("  🤖  Swara AI\n        v2.1.0")
-        hub.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_BODY, QFont.Weight.Bold))
-        hub.setStyleSheet(f"color: {dt.TEXT_PRIMARY}; margin-bottom: 12px;")
+        hub = QLabel("  Jarvis AI\n  <span style='color:{dt.TEXT_MUTED}; font-size:9pt;'>Advanced Core v2.2</span>")
+        hub.setFont(QFont(dt.FONT_FAMILY, 12, QFont.Weight.Bold))
+        hub.setStyleSheet(f"color: {dt.TEXT_PRIMARY}; margin-bottom: 20px;")
         layout.addWidget(hub)
-
-        sep = QFrame(); sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background: {dt.BORDER_DEFAULT};")
-        layout.addWidget(sep)
-        layout.addSpacing(8)
 
         self.nav_buttons = {}
         for i, name in enumerate(["Home", "Models", "Local LLMs", "API Keys", "History"]):
@@ -393,28 +398,27 @@ class JarvisDashboard(QMainWindow):
 
         layout.addStretch()
 
-        launch_btn = QPushButton("▶  Launch Assistant")
-        launch_btn.setFixedHeight(40)
+        launch_btn = QPushButton("󰐊  Launch Assistant")
+        launch_btn.setFixedHeight(46)
         launch_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         launch_btn.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_BODY, QFont.Weight.Bold))
         launch_btn.setStyleSheet(f"""
             QPushButton {{
                 color: {dt.TEXT_ON_ACCENT};
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-                    stop:0 {dt.ACCENT}, stop:1 #1e88e5);
-                border: none; border-radius: {dt.RADIUS}px;
+                background: {dt.ACCENT};
+                border: none; border-radius: {dt.RADIUS_SM}px;
             }}
             QPushButton:hover {{
-                background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
-                    stop:0 {dt.ACCENT_HOVER}, stop:1 #42a5f5);
+                background: {dt.ACCENT_HOVER};
             }}
             QPushButton:pressed {{ background: {dt.ACCENT_PRESSED}; }}
         """)
         launch_btn.clicked.connect(self._launch_assistant)
         layout.addWidget(launch_btn)
 
-        ver = QLabel("  Jarvis v1.2.0")
-        ver.setStyleSheet(f"color: {dt.TEXT_MUTED}; font-size: {dt.FONT_SIZE_CAPTION}pt; margin-top: 4px;")
+        ver = QLabel("System Status: Nominal")
+        ver.setStyleSheet(f"color: {dt.SUCCESS}; font-size: 8pt; margin-top: 8px; font-weight: bold;")
+        ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(ver)
 
         return sidebar
@@ -428,12 +432,8 @@ class JarvisDashboard(QMainWindow):
     # ── Launch Assistant ─────────────────────────────────────────────────────
 
     def _launch_assistant(self):
-        # We want to launch the main.py script with the --assistant flag
-        # to open the voice orb window.
         python_exe = sys.executable
         script_path = os.path.join(PROJECT_ROOT, "Jarvis", "main.py")
-        
-        # Use subprocess to launch a new process for the assistant
         subprocess.Popen(
             [python_exe, script_path, "--assistant"],
             cwd=PROJECT_ROOT,
@@ -447,105 +447,95 @@ class JarvisDashboard(QMainWindow):
     def _build_home(self):
         page = QScrollArea()
         page.setWidgetResizable(True)
-        page.setStyleSheet(dt.scrollarea_style() + "QScrollArea { background: transparent; }")
+        page.setStyleSheet(dt.scrollarea_style())
 
         content = QWidget()
-        content.setStyleSheet("background: transparent;")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 20, 24, 24)
-        layout.setSpacing(20)
+        layout.setContentsMargins(dt.SPACING_XL, dt.SPACING_LG, dt.SPACING_XL, dt.SPACING_XL)
+        layout.setSpacing(dt.SPACING_XL)
 
         # ── Hero Card ──
         hero = GlassmorphicFrame()
-        hero.setMinimumHeight(220)
+        hero.setMinimumHeight(240)
         hl = QVBoxLayout(hero)
-        hl.setContentsMargins(28, 20, 28, 20)
-        hl.setSpacing(8)
+        hl.setContentsMargins(dt.SPACING_XXL, dt.SPACING_XL, dt.SPACING_XXL, dt.SPACING_XL)
+        hl.setSpacing(12)
 
         badge_row = QHBoxLayout()
-        badge = QLabel("  ● Active")
-        badge.setFixedSize(80, 24)
+        badge = QLabel("  ●  System Active")
+        badge.setFixedSize(120, 26)
         badge.setStyleSheet(f"""
             background: {dt.SUCCESS_BG}; color: {dt.SUCCESS};
-            border-radius: 12px; font-size: {dt.FONT_SIZE_SMALL}pt;
-            font-weight: bold; padding-left: 4px;
+            border-radius: 13px; font-size: 9pt;
+            font-weight: bold; padding-left: 8px;
         """)
-        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         badge_row.addWidget(badge)
         badge_row.addStretch()
 
-        mic_btn = QPushButton("🎙")
-        mic_btn.setFixedSize(42, 42)
+        mic_btn = QPushButton("󰍬")
+        mic_btn.setFixedSize(48, 48)
         mic_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         mic_btn.setStyleSheet(f"""
             QPushButton {{
-                background: rgba(255,255,255,0.06);
+                background: rgba(255,255,255,0.05);
                 border: 1px solid rgba(255,255,255,0.1);
-                border-radius: 21px; font-size: 18pt;
+                border-radius: 24px; font-size: 20pt; color: {dt.ACCENT};
             }}
-            QPushButton:hover {{ background: rgba(19,91,236,0.2); }}
+            QPushButton:hover {{ background: {dt.ACCENT_BG}; border-color: {dt.ACCENT}; }}
         """)
         mic_btn.clicked.connect(self._launch_assistant)
         badge_row.addWidget(mic_btn)
         hl.addLayout(badge_row)
 
         model_name = _active_model_name()
-        title = QLabel("Ready to assist you.")
-        title.setFont(QFont(dt.FONT_FAMILY, 24, QFont.Weight.Bold))
+        title = QLabel(f"Welcome back. {model_name} is ready.")
+        title.setFont(QFont(dt.FONT_FAMILY, 28, QFont.Weight.Black))
         title.setStyleSheet("color: white; border: none; background: transparent;")
         hl.addWidget(title)
 
-        wave = QFrame()
-        wave.setFixedHeight(70)
-        wave.setStyleSheet("""
-            background: qlineargradient(x1:0,y1:0,x2:1,y2:0.5,
-                stop:0 rgba(88,166,255,0.15), stop:0.3 rgba(188,140,255,0.2),
-                stop:0.6 rgba(0,255,159,0.15), stop:1 rgba(88,166,255,0.1));
-            border-radius: 8px;
-        """)
-        hl.addWidget(wave)
+        subtitle = QLabel("How can I assist you with your projects today?")
+        subtitle.setFont(QFont(dt.FONT_FAMILY, 14))
+        subtitle.setStyleSheet(f"color: {dt.TEXT_SECONDARY}; border: none;")
+        hl.addWidget(subtitle)
 
-        last_cmd = QLabel('"Show me the latest local models available..."')
+        hl.addSpacing(10)
+        
+        last_cmd = QLabel("󰜎  Recent activity: Executed codebase investigation")
         last_cmd.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_BODY))
-        last_cmd.setStyleSheet(f"color: {dt.TEXT_SECONDARY}; border: none; background: transparent;")
+        last_cmd.setStyleSheet(f"color: {dt.TEXT_MUTED}; border: none;")
         hl.addWidget(last_cmd)
 
         layout.addWidget(hero)
 
         # ── Stat Cards ──
         stats_row = QHBoxLayout()
-        stats_row.setSpacing(16)
+        stats_row.setSpacing(dt.SPACING_LG)
 
-        self._spark_cpu = SparkLine(color="#3fb950", dot_color="#3fb950")
-        self._spark_net = SparkLine(color="#bc8cff", dot_color="#e040fb")
+        self._spark_cpu = SparkLine(color=dt.SUCCESS, dot_color=dt.SUCCESS)
+        self._spark_net = SparkLine(color=dt.INFO, dot_color=dt.INFO)
 
         for label, val, unit, spark in [
-            ("⚡  System Load", "14", "%",   self._spark_cpu),
-            ("📡  Network Ping", "24", "ms", self._spark_net),
-            ("🤖  Active Model", model_name, "",  None),
+            ("󰻠  CPU LOAD", "12", "%",   self._spark_cpu),
+            ("󰖩  LATENCY", "18", "ms", self._spark_net),
+            ("󰚩  AI CORE", "V2.2", "",  None),
         ]:
             card = GlassmorphicFrame()
-            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            card.setFixedHeight(100)
+            card.setFixedHeight(120)
             cl = QVBoxLayout(card)
-            cl.setContentsMargins(16, 12, 16, 12)
+            cl.setContentsMargins(dt.SPACING_LG, dt.SPACING_MD, dt.SPACING_LG, dt.SPACING_MD)
 
             top = QHBoxLayout()
             lbl = QLabel(label)
-            lbl.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_SMALL))
-            lbl.setStyleSheet(f"color: {dt.TEXT_SECONDARY}; background: transparent; border: none;")
+            lbl.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_CAPTION, QFont.Weight.Bold))
+            lbl.setStyleSheet(f"color: {dt.TEXT_MUTED}; letter-spacing: 1px;")
             top.addWidget(lbl)
             top.addStretch()
-            if spark:
-                dot = QLabel("●")
-                dot.setStyleSheet(f"color: {spark._color.name()}; font-size: 8pt; background: transparent; border: none;")
-                top.addWidget(dot)
             cl.addLayout(top)
 
             bottom = QHBoxLayout()
-            v_lbl = QLabel(f"<span style='font-size:22pt;font-weight:700;'>{val}</span>"
-                           f"<span style='font-size:11pt;color:{dt.TEXT_SECONDARY};'>{unit}</span>")
-            v_lbl.setStyleSheet("background: transparent; border: none;")
+            v_lbl = QLabel(f"<span style='font-size:24pt;font-weight:900;'>{val}</span>"
+                           f"<span style='font-size:12pt;color:{dt.TEXT_SECONDARY}; font-weight:400;'> {unit}</span>")
             bottom.addWidget(v_lbl)
             bottom.addStretch()
             if spark:
@@ -556,68 +546,58 @@ class JarvisDashboard(QMainWindow):
 
         layout.addLayout(stats_row)
 
-        # ── Quick Start Services Header & Opacity Slider ──
-        qs_row = QHBoxLayout()
-        qs = QLabel("Quick Start Services")
-        qs.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_H2, QFont.Weight.Bold))
-        qs_row.addWidget(qs)
+        # ── Quick Actions ──
+        qa_header = QHBoxLayout()
+        qa_label = QLabel("Recommended Actions")
+        qa_label.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_H2, QFont.Weight.Bold))
+        qa_header.addWidget(qa_label)
+        qa_header.addStretch()
         
-        qs_row.addStretch()
-        op_lbl = QLabel("Background Dimming:")
-        op_lbl.setStyleSheet(f"color: {dt.TEXT_SECONDARY}; font-size: {dt.FONT_SIZE_SMALL}pt;")
-        qs_row.addWidget(op_lbl)
+        op_lbl = QLabel("Glass Opacity:")
+        op_lbl.setStyleSheet(f"color: {dt.TEXT_MUTED}; font-size: 8pt;")
+        qa_header.addWidget(op_lbl)
         
         from PyQt6.QtWidgets import QSlider
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
-        self.opacity_slider.setRange(0, 90)
-        self.opacity_slider.setValue(20) # 20% initial dimming
-        self.opacity_slider.setFixedWidth(120)
-        self.opacity_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.opacity_slider.setRange(5, 95)
+        self.opacity_slider.setValue(40)
+        self.opacity_slider.setFixedWidth(100)
         self.opacity_slider.setStyleSheet(f"""
-            QSlider::groove:horizontal {{
-                border-radius: 2px; height: 4px; background: rgba(255,255,255,0.2);
-            }}
-            QSlider::handle:horizontal {{
-                background: {dt.ACCENT}; width: 12px; height: 12px;
-                margin: -4px 0; border-radius: 6px;
-            }}
+            QSlider::groove:horizontal {{ height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; }}
+            QSlider::handle:horizontal {{ background: {dt.ACCENT}; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }}
         """)
         self.opacity_slider.valueChanged.connect(self._on_opacity_changed)
-        qs_row.addWidget(self.opacity_slider)
-        
-        layout.addLayout(qs_row)
+        qa_header.addWidget(self.opacity_slider)
+        layout.addLayout(qa_header)
 
         svc_row = QHBoxLayout()
-        svc_row.setSpacing(16)
+        svc_row.setSpacing(dt.SPACING_LG)
         for icon, name, desc, color in [
-            ("🎨", "Image Generation", "Generate images instantly using AI.", "#e040fb"),
-            ("⟨/⟩", "Code Assistant", "Launch voice assistant tailored for coding.", "#58a6ff"),
-            ("🌐", "Web Search", "Search the web for real-time information.", "#ffab40"),
+            ("󰏘", "Creative Mode", "High-fidelity image generation.", "#d946ef"),
+            ("󰅩", "Coding Forge", "Specialized coding assistance.", "#3b82f6"),
+            ("󰖟", "Knowledge Base", "Real-time web search access.", "#06b6d4"),
         ]:
             card = GlassmorphicFrame()
-            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            card.setFixedHeight(130)
+            card.setFixedHeight(150)
             card.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            
-            # Make the card clickable
             card.mousePressEvent = lambda e, n=name: self._handle_quick_start(n)
+            
             cl = QVBoxLayout(card)
-            cl.setContentsMargins(16, 16, 16, 16)
+            cl.setContentsMargins(dt.SPACING_LG, dt.SPACING_LG, dt.SPACING_LG, dt.SPACING_LG)
 
             ic = QLabel(icon)
-            ic.setFixedSize(40, 40)
+            ic.setFixedSize(44, 44)
             ic.setAlignment(Qt.AlignmentFlag.AlignCenter)
             c = QColor(color)
-            ic.setStyleSheet(f"background: rgba({c.red()},{c.green()},{c.blue()},0.15); border-radius: 12px; font-size: 18pt; border: none;")
+            ic.setStyleSheet(f"background: rgba({c.red()},{c.green()},{c.blue()},0.1); border-radius: 12px; font-size: 22pt; color: {color}; border: none;")
             cl.addWidget(ic)
 
             nl = QLabel(name)
             nl.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_H3, QFont.Weight.Bold))
-            nl.setStyleSheet("background: transparent; border: none;")
             cl.addWidget(nl)
 
             dl = QLabel(desc)
-            dl.setStyleSheet(f"color: {dt.TEXT_SECONDARY}; font-size: {dt.FONT_SIZE_SMALL}pt; background: transparent; border: none;")
+            dl.setStyleSheet(f"color: {dt.TEXT_SECONDARY}; font-size: 9pt;")
             dl.setWordWrap(True)
             cl.addWidget(dl)
 
@@ -627,6 +607,7 @@ class JarvisDashboard(QMainWindow):
         layout.addStretch()
         page.setWidget(content)
         return page
+
 
     # ── Utilities ────────────────────────────────────────────────────────────
     

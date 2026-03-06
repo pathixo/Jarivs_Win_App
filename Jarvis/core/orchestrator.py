@@ -875,7 +875,7 @@ class Orchestrator:
                 
                 try:
                     from Jarvis.core.agent import ReActAgent
-                    agent = ReActAgent(brain=self.brain, tools_instance=self.tools, max_iterations=8)
+                    agent = ReActAgent(brain=self.brain, tools_instance=self.tools, action_router=self.action_router, max_iterations=8)
                     
                     result = agent.run(task)
                     

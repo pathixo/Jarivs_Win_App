@@ -17,82 +17,82 @@ Stitch project metadata:
 # ── Palette ──────────────────────────────────────────────────────────────────
 
 # Background layers (darkest → lightest)
-BG_BASE           = "#0e1117"
-BG_SURFACE        = "#161b22"
-BG_SURFACE_ALT    = "#1c2333"
-BG_ELEVATED       = "#21283b"
+BG_BASE           = "#020617"  # Deepest Slate
+BG_SURFACE        = "#0f172a"  # Slate 900
+BG_SURFACE_ALT    = "#1e293b"  # Slate 800
+BG_ELEVATED       = "#334155"  # Slate 700
 
 # Borders / Dividers
-BORDER_DEFAULT    = "#2a3140"
-BORDER_SUBTLE     = "#1e2530"
-BORDER_ACCENT     = "#135bec"
+BORDER_DEFAULT    = "rgba(255, 255, 255, 0.08)"
+BORDER_SUBTLE     = "rgba(255, 255, 255, 0.04)"
+BORDER_ACCENT     = "#6366f1"  # Indigo 500
 
 # Text
-TEXT_PRIMARY       = "#e6edf3"
-TEXT_SECONDARY     = "#8b949e"
-TEXT_MUTED         = "#484f58"
+TEXT_PRIMARY       = "#f8fafc"  # Slate 50
+TEXT_SECONDARY     = "#94a3b8"  # Slate 400
+TEXT_MUTED         = "#64748b"  # Slate 500
 TEXT_ON_ACCENT     = "#ffffff"
 
 # Accent
-ACCENT             = "#135bec"
-ACCENT_HOVER       = "#2d6ff2"
-ACCENT_PRESSED     = "#0d47c4"
-ACCENT_BG          = "rgba(19, 91, 236, 0.12)"
-ACCENT_BG_HOVER    = "rgba(19, 91, 236, 0.20)"
+ACCENT             = "#6366f1"  # Indigo 500
+ACCENT_HOVER       = "#818cf8"  # Indigo 400
+ACCENT_PRESSED     = "#4f46e5"  # Indigo 600
+ACCENT_BG          = "rgba(99, 102, 241, 0.1)"
+ACCENT_BG_HOVER    = "rgba(99, 102, 241, 0.15)"
 
 # Semantic
-SUCCESS            = "#3fb950"
-SUCCESS_BG         = "rgba(63, 185, 80, 0.12)"
-WARNING            = "#d29922"
-WARNING_BG         = "rgba(210, 153, 34, 0.12)"
-ERROR              = "#f85149"
-ERROR_BG           = "rgba(248, 81, 73, 0.12)"
-INFO               = "#58a6ff"
+SUCCESS            = "#10b981"  # Emerald 500
+SUCCESS_BG         = "rgba(16, 185, 129, 0.1)"
+WARNING            = "#f59e0b"  # Amber 500
+WARNING_BG         = "rgba(245, 158, 11, 0.1)"
+ERROR              = "#ef4444"  # Red 500
+ERROR_BG           = "rgba(239, 68, 68, 0.1)"
+INFO               = "#06b6d4"  # Cyan 500
 
 # Sidebar
-SIDEBAR_BG         = "#0d1117"
-SIDEBAR_HOVER      = "rgba(19, 91, 236, 0.10)"
-SIDEBAR_ACTIVE     = "rgba(19, 91, 236, 0.18)"
+SIDEBAR_BG         = "rgba(2, 6, 23, 0.8)"
+SIDEBAR_HOVER      = "rgba(255, 255, 255, 0.03)"
+SIDEBAR_ACTIVE     = "rgba(99, 102, 241, 0.08)"
 SIDEBAR_INDICATOR  = ACCENT
 
 # ── Typography ───────────────────────────────────────────────────────────────
 
 FONT_FAMILY        = "Inter"
-FONT_FAMILY_MONO   = "Consolas"
+FONT_FAMILY_MONO   = "JetBrains Mono"
 
 # Point sizes
-FONT_SIZE_H1       = 22
-FONT_SIZE_H2       = 17
-FONT_SIZE_H3       = 14
-FONT_SIZE_BODY     = 12
+FONT_SIZE_H1       = 24
+FONT_SIZE_H2       = 18
+FONT_SIZE_H3       = 15
+FONT_SIZE_BODY     = 11
 FONT_SIZE_SMALL    = 10
 FONT_SIZE_CAPTION  = 9
 
 # ── Spacing & Roundness ─────────────────────────────────────────────────────
 
-RADIUS             = 8       # px  (Stitch "ROUND_EIGHT")
-RADIUS_SM          = 4
-RADIUS_LG          = 12
-RADIUS_XL          = 16
+RADIUS             = 10      # px
+RADIUS_SM          = 6
+RADIUS_LG          = 14
+RADIUS_XL          = 20
 
 SPACING_XS         = 4
 SPACING_SM         = 8
 SPACING_MD         = 12
-SPACING_LG         = 16
-SPACING_XL         = 24
-SPACING_XXL        = 32
+SPACING_LG         = 20
+SPACING_XL         = 32
+SPACING_XXL        = 48
 
 # ── Component Dimensions ────────────────────────────────────────────────────
 
-SIDEBAR_WIDTH      = 220
-HEADER_HEIGHT      = 48
-CARD_MIN_WIDTH     = 280
+SIDEBAR_WIDTH      = 240
+HEADER_HEIGHT      = 56
+CARD_MIN_WIDTH     = 300
 
 # ── Shadows ─────────────────────────────────────────────────────────────────
 
-SHADOW_COLOR       = "rgba(0, 0, 0, 0.35)"
-SHADOW_BLUR        = 20
-SHADOW_OFFSET_Y    = 4
+SHADOW_COLOR       = "rgba(0, 0, 0, 0.5)"
+SHADOW_BLUR        = 30
+SHADOW_OFFSET_Y    = 8
 
 # ── Pre-built Stylesheet Fragments ──────────────────────────────────────────
 
@@ -108,15 +108,15 @@ def card_style() -> str:
 def card_hover_style() -> str:
     return f"""
         background: {BG_SURFACE_ALT};
-        border: 1px solid {BORDER_ACCENT};
+        border: 1px solid {ACCENT};
     """
 
 def input_style() -> str:
     return f"""
         color: {TEXT_PRIMARY};
-        background: {BG_BASE};
+        background: rgba(0, 0, 0, 0.2);
         border: 1px solid {BORDER_DEFAULT};
-        border-radius: {RADIUS}px;
+        border-radius: {RADIUS_SM}px;
         padding: {SPACING_SM}px {SPACING_MD}px;
         font-family: '{FONT_FAMILY}';
         font-size: {FONT_SIZE_BODY}pt;
@@ -125,7 +125,7 @@ def input_style() -> str:
 def input_focus_style() -> str:
     return f"""
         border-color: {ACCENT};
-        background: {BG_BASE};
+        background: rgba(0, 0, 0, 0.3);
     """
 
 def button_primary_style() -> str:
@@ -134,7 +134,7 @@ def button_primary_style() -> str:
             color: {TEXT_ON_ACCENT};
             background: {ACCENT};
             border: none;
-            border-radius: {RADIUS}px;
+            border-radius: {RADIUS_SM}px;
             padding: {SPACING_SM}px {SPACING_LG}px;
             font-family: '{FONT_FAMILY}';
             font-size: {FONT_SIZE_BODY}pt;
@@ -152,35 +152,32 @@ def button_secondary_style() -> str:
     return f"""
         QPushButton {{
             color: {TEXT_PRIMARY};
-            background: {BG_SURFACE};
+            background: rgba(255, 255, 255, 0.05);
             border: 1px solid {BORDER_DEFAULT};
-            border-radius: {RADIUS}px;
+            border-radius: {RADIUS_SM}px;
             padding: {SPACING_SM}px {SPACING_LG}px;
             font-family: '{FONT_FAMILY}';
             font-size: {FONT_SIZE_BODY}pt;
         }}
         QPushButton:hover {{
-            background: {BG_SURFACE_ALT};
-            border-color: {ACCENT};
-            color: {ACCENT};
+            background: rgba(255, 255, 255, 0.08);
+            border-color: {TEXT_SECONDARY};
         }}
     """
 
 def progress_bar_style(color: str = ACCENT) -> str:
     return f"""
         QProgressBar {{
-            background: {BG_BASE};
-            border: 1px solid {BORDER_DEFAULT};
-            border-radius: {RADIUS_SM}px;
+            background: rgba(0, 0, 0, 0.2);
+            border: none;
+            border-radius: 3px;
             text-align: center;
-            color: {TEXT_SECONDARY};
-            font-size: {FONT_SIZE_SMALL}pt;
-            min-height: 8px;
-            max-height: 8px;
+            min-height: 6px;
+            max-height: 6px;
         }}
         QProgressBar::chunk {{
             background: {color};
-            border-radius: {RADIUS_SM}px;
+            border-radius: 3px;
         }}
     """
 
@@ -192,16 +189,16 @@ def scrollarea_style() -> str:
         }}
         QScrollBar:vertical {{
             background: transparent;
-            width: 6px;
-            margin: 4px 0;
+            width: 8px;
+            margin: 4px;
         }}
         QScrollBar::handle:vertical {{
-            background: {BORDER_DEFAULT};
-            border-radius: 3px;
-            min-height: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            min-height: 30px;
         }}
         QScrollBar::handle:vertical:hover {{
-            background: {TEXT_MUTED};
+            background: rgba(255, 255, 255, 0.2);
         }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
             height: 0;
@@ -212,17 +209,17 @@ def toggle_style() -> str:
     """Styled checkbox that looks like a toggle switch."""
     return f"""
         QCheckBox {{
-            spacing: 8px;
+            spacing: 12px;
             color: {TEXT_PRIMARY};
             font-family: '{FONT_FAMILY}';
             font-size: {FONT_SIZE_BODY}pt;
         }}
         QCheckBox::indicator {{
-            width: 36px;
-            height: 20px;
-            border-radius: 10px;
+            width: 40px;
+            height: 22px;
+            border-radius: 11px;
             border: 1px solid {BORDER_DEFAULT};
-            background: {BG_BASE};
+            background: rgba(0, 0, 0, 0.2);
         }}
         QCheckBox::indicator:checked {{
             background: {ACCENT};
@@ -234,34 +231,36 @@ def combobox_style() -> str:
     return f"""
         QComboBox {{
             color: {TEXT_PRIMARY};
-            background: {BG_BASE};
+            background: rgba(0, 0, 0, 0.2);
             border: 1px solid {BORDER_DEFAULT};
-            border-radius: {RADIUS}px;
+            border-radius: {RADIUS_SM}px;
             padding: {SPACING_SM}px {SPACING_MD}px;
             font-family: '{FONT_FAMILY}';
             font-size: {FONT_SIZE_BODY}pt;
-            min-height: 28px;
+            min-height: 32px;
         }}
         QComboBox:hover {{
             border-color: {ACCENT};
         }}
         QComboBox::drop-down {{
             border: none;
-            width: 24px;
+            width: 30px;
         }}
         QComboBox::down-arrow {{
             image: none;
-            border-left: 4px solid transparent;
-            border-right: 4px solid transparent;
-            border-top: 5px solid {TEXT_SECONDARY};
-            margin-right: 8px;
+            border-left: 5px solid transparent;
+            border-right: 5px solid transparent;
+            border-top: 6px solid {TEXT_SECONDARY};
+            margin-right: 10px;
         }}
         QComboBox QAbstractItemView {{
             background: {BG_SURFACE};
             color: {TEXT_PRIMARY};
             border: 1px solid {BORDER_DEFAULT};
-            selection-background-color: {ACCENT};
-            selection-color: {TEXT_ON_ACCENT};
+            selection-background-color: {ACCENT_BG};
+            selection-color: {ACCENT};
             outline: none;
+            border-radius: {RADIUS_SM}px;
         }}
     """
+
