@@ -18,42 +18,44 @@ Stitch project metadata:
 
 # Background layers (darkest → lightest)
 BG_BASE           = "#020617"  # Deepest Slate
-BG_SURFACE        = "#0f172a"  # Slate 900
-BG_SURFACE_ALT    = "#1e293b"  # Slate 800
-BG_ELEVATED       = "#334155"  # Slate 700
+BG_SURFACE        = "#0B1120"  # Slightly lighter Slate for sections
+BG_SURFACE_ALT    = "#141C2F"  # Slate 800
+BG_ELEVATED       = "#1E293B"  # Slate 700
 
 # Borders / Dividers
-BORDER_DEFAULT    = "rgba(255, 255, 255, 0.08)"
+BORDER_DEFAULT    = "rgba(255, 255, 255, 0.06)"
+BORDER_STRONG     = "rgba(255, 255, 255, 0.12)"
 BORDER_SUBTLE     = "rgba(255, 255, 255, 0.04)"
-BORDER_ACCENT     = "#6366f1"  # Indigo 500
+BORDER_ACCENT     = "#4F46E5"  # Indigo 600
 
 # Text
-TEXT_PRIMARY       = "#f8fafc"  # Slate 50
-TEXT_SECONDARY     = "#94a3b8"  # Slate 400
-TEXT_MUTED         = "#64748b"  # Slate 500
-TEXT_ON_ACCENT     = "#ffffff"
+TEXT_PRIMARY       = "#F8FAFC"  # Slate 50
+TEXT_SECONDARY     = "#94A3B8"  # Slate 400
+TEXT_MUTED         = "#64748B"  # Slate 500
+TEXT_ON_ACCENT     = "#FFFFFF"
 
-# Accent
-ACCENT             = "#6366f1"  # Indigo 500
-ACCENT_HOVER       = "#818cf8"  # Indigo 400
-ACCENT_PRESSED     = "#4f46e5"  # Indigo 600
+# Accent - Professional Indigo
+ACCENT             = "#6366F1"  # Indigo 500
+ACCENT_HOVER       = "#818CF8"  # Indigo 400
+ACCENT_PRESSED     = "#4F46E5"  # Indigo 600
 ACCENT_BG          = "rgba(99, 102, 241, 0.1)"
 ACCENT_BG_HOVER    = "rgba(99, 102, 241, 0.15)"
 
 # Semantic
-SUCCESS            = "#10b981"  # Emerald 500
+SUCCESS            = "#10B981"  # Emerald 500
 SUCCESS_BG         = "rgba(16, 185, 129, 0.1)"
-WARNING            = "#f59e0b"  # Amber 500
+WARNING            = "#F59E0B"  # Amber 500
 WARNING_BG         = "rgba(245, 158, 11, 0.1)"
-ERROR              = "#ef4444"  # Red 500
+ERROR              = "#EF4444"  # Red 500
 ERROR_BG           = "rgba(239, 68, 68, 0.1)"
-INFO               = "#06b6d4"  # Cyan 500
+INFO               = "#0EA5E9"  # Sky 500
 
 # Sidebar
-SIDEBAR_BG         = "rgba(2, 6, 23, 0.8)"
+SIDEBAR_BG         = "rgba(2, 6, 23, 0.6)"
 SIDEBAR_HOVER      = "rgba(255, 255, 255, 0.03)"
-SIDEBAR_ACTIVE     = "rgba(99, 102, 241, 0.08)"
+SIDEBAR_ACTIVE     = "rgba(99, 102, 241, 0.12)"
 SIDEBAR_INDICATOR  = ACCENT
+
 
 # ── Typography ───────────────────────────────────────────────────────────────
 

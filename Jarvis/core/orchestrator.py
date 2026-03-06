@@ -36,6 +36,7 @@ from Jarvis.core.system import (
 from Jarvis.core.terminal_bridge import get_terminal_bridge
 from Jarvis.core.intent_engine import IntentEngine, IntentResult
 from Jarvis.core.web_search import web_search, format_search_results
+from Jarvis.core.telemetry import get_telemetry, AgentPhase, TelemetryType
 from Jarvis.config import (
     GROQ_API_KEY, GROQ_INTENT_MODEL,
     INTENT_ENGINE_ENABLED, INTENT_CONFIDENCE_THRESHOLD,
@@ -43,6 +44,7 @@ from Jarvis.config import (
 )
 
 logger = logging.getLogger("jarvis.orchestrator")
+telemetry = get_telemetry()
 
 
 # ─────────────────────────── Tag Stream Filter ────────────────────────────
@@ -301,21 +303,22 @@ class Orchestrator:
             return ""
 
         logger.info("Processing command: %s", command_text[:80])
+        telemetry.emit(AgentPhase.ROUTING, f"Analyzing user intent: {command_text[:40]}...", provider="local")
         print()
         print(clr.divider())
         clr.print_user(command_text)
 
         # ── Launch Deep Intent Analysis concurrently ────────────────────────
-        # Fires off immediately so it runs in parallel with any
-        # deterministic bypasses and the filler-phrase timeout.
         _intent_future = None
         if self.intent_engine:
             _history = self.brain.memory.get_history()
             _intent_future = self.intent_engine.analyze_async(command_text, _history)
+            telemetry.emit(AgentPhase.ROUTING, "Parallel Intent Analysis launched.", provider="groq", model=GROQ_INTENT_MODEL)
 
         try:
             # 1. Meta-commands: "llm ..." or "brain ..."
             if re.search(r"^(llm|brain)\b", command_text, re.IGNORECASE):
+                telemetry.emit(AgentPhase.ROUTING, "Matched meta-command.", type=TelemetryType.SUCCESS)
                 result = self._handle_meta_command(command_text)
                 print(clr.info(result))
                 return result
@@ -959,6 +962,7 @@ class Orchestrator:
         # ════════════════════════════════════════════════════════════════════
         action_response = ""
         try:
+            telemetry.emit(AgentPhase.THINKING, "Classifying actions...", provider="ollama", model=OLLAMA_MODEL)
             clr.print_info("  [Phase 1] Local action analysis...")
             action_response = self.brain.generate_response(
                 command_text,
@@ -970,6 +974,7 @@ class Orchestrator:
             )
             logger.info("Action engine response: %s", action_response[:200])
             clr.print_info(f"  [Phase 1] Result: {action_response.strip()[:120]}")
+            telemetry.thought(f"Ollama decided: {action_response.strip()}", provider="ollama", model=OLLAMA_MODEL)
         except Exception as e:
             logger.warning("Phase 1 (local action) failed: %s", e)
             action_response = "CONVERSATION"
@@ -984,10 +989,12 @@ class Orchestrator:
         calc_matches = self._CALC_TAG_RE.findall(action_response)
         for expr in calc_matches:
             is_action_request = True
+            telemetry.emit(AgentPhase.EXECUTING, f"Math Engine: {expr.strip()}", type=TelemetryType.TOOL)
             clr.print_info(f"  [Calc] {expr.strip()}")
             calc_result = self.tools.calculate(expr.strip())
             execution_results.append(f"Calculation: {expr.strip()} = {calc_result}")
             clr.print_info(f"  [Calc] Result: {calc_result}")
+            telemetry.emit(AgentPhase.EXECUTING, f"Result: {calc_result}", type=TelemetryType.SUCCESS)
 
         # 2b. Extract [SHELL] and [ACTION] tags using the existing filter
         action_filter = _TagStreamFilter()
@@ -999,15 +1006,18 @@ class Orchestrator:
             from Jarvis.core.system.action_router import parse_action_tag
             action_req = parse_action_tag(action_str)
             if action_req:
+                telemetry.emit(AgentPhase.EXECUTING, f"Action: {action_req.action_type.value}", type=TelemetryType.TOOL)
                 clr.print_info(f"  [Action] {action_req.action_type.value} -> {action_req.target}")
                 action_result = self.action_router.execute_action(action_req)
                 execution_results.append(f"Action ({action_req.action_type.value}): {action_result.message}")
+                telemetry.emit(AgentPhase.EXECUTING, action_result.message, type=TelemetryType.SUCCESS)
 
         for cmd in action_filter.shell_commands:
             cmd = cmd.strip()
             if not cmd:
                 continue
             is_action_request = True
+            telemetry.emit(AgentPhase.EXECUTING, f"Shell: {cmd}", type=TelemetryType.TOOL)
             clr.print_shell(cmd)
             self._speak_async("Running that now, sir.")
             shell_output = self._execute_shell(cmd, from_llm=True)
@@ -1026,6 +1036,7 @@ class Orchestrator:
             self._pending_search_query = None
         
         if execution_results:
+            telemetry.emit(AgentPhase.THINKING, "Formulating success response...", provider="gemini")
             # Summarize what was done so the conversation model can describe it
             exec_summary = "\n".join(execution_results)
             conv_prompt = (
@@ -1035,6 +1046,7 @@ class Orchestrator:
                 f"Be concise (1-2 sentences). Don't repeat the command verbatim."
             )
         elif search_context:
+            telemetry.emit(AgentPhase.THINKING, "Processing web search results...", provider="gemini")
             # Include web search results for the LLM to summarize
             conv_prompt = (
                 f"The user asked: \"{command_text}\"\n\n"
@@ -1045,12 +1057,13 @@ class Orchestrator:
                 f"Cite sources if mentioning specific facts. Don't mention 'the search results' explicitly."
             )
         else:
+            telemetry.emit(AgentPhase.THINKING, "Thinking...", provider="gemini")
             # Pure conversation — just pass the user's text
             conv_prompt = command_text
 
         # Decide conversation provider: Gemini if available, else local
         conv_provider = "gemini" if GEMINI_API_KEY else None  # None = use default
-        conv_model = None  # Use provider default
+        conv_model = GEMINI_MODEL if GEMINI_API_KEY else OLLAMA_MODEL
 
         # ── Filler Logic ──
         _first_token_received = threading.Event()
@@ -1088,6 +1101,7 @@ class Orchestrator:
                     if not _first_token_received.is_set():
                         _first_token_received.set()
                         t_first_token = time.time()
+                        telemetry.emit(AgentPhase.SPEAKING, "Response stream started.", provider=conv_provider, model=conv_model)
                         logger.info("TTFT: %.0fms", (t_first_token - t0) * 1000)
 
                     llm_response += token
@@ -1192,14 +1206,6 @@ class Orchestrator:
     def _execute_shell(self, command: str, from_llm: bool = False) -> str:
         """
         Execute a command via the OS Abstraction Layer.
-
-        Routes through ActionRouter → SystemBackend. The ActionRouter
-        handles all safety decisions (block CRITICAL, confirm HIGH).
-        Confirmation mode adds blanket confirmation for ALL commands.
-
-        Args:
-            command: The shell command to run.
-            from_llm: If True, this command came from LLM output (extra safety).
         """
         # Get terminal bridge for real-time display
         terminal_bridge = get_terminal_bridge()
@@ -1209,6 +1215,7 @@ class Orchestrator:
             if not self._request_confirmation(command):
                 msg = f"Command cancelled by user: `{command}`"
                 clr.print_warning(msg)
+                telemetry.emit(AgentPhase.EXECUTING, msg, type=TelemetryType.WARNING)
                 return msg
 
         # WSL Sandbox override
@@ -1216,13 +1223,16 @@ class Orchestrator:
             logger.info("Routing command to WSL: %s", command)
             command = f"wsl -- {command}"
 
-        # Emit command to terminal window
+        # Emit to telemetry and legacy terminal bridge
+        telemetry.tool_start("Terminal", command)
         terminal_bridge.on_command_started(command)
         
-        # Execute via ActionRouter (which delegates to SystemBackend)
+        # Execute via ActionRouter
+        t_start = time.time()
         result = self.action_router.execute_shell(command, from_llm=from_llm)
+        dt = (time.time() - t_start) * 1000
 
-        # Format output for display — use message for blocked/denied commands
+        # Format output
         if not result.success:
             final_out = result.message
             is_error = True
@@ -1230,12 +1240,15 @@ class Orchestrator:
             final_out = str(result)
             is_error = False
 
+        # Emit to telemetry
+        telemetry.tool_end("Terminal", final_out, success=not is_error)
+        
         if result.success and final_out == "Command executed.":
             clr.print_info("Command executed.")
         elif final_out:
             clr.print_shell_output(final_out)
 
-        # Emit output to terminal window
+        # Legacy bridge
         terminal_bridge.on_command_completed(command, final_out, is_error=is_error)
 
         if self.worker:

@@ -10,6 +10,7 @@ import os
 from typing import Optional
 
 from Jarvis.core.system.backend import SystemBackend
+from Jarvis.core.telemetry import get_telemetry, AgentPhase, TelemetryType
 
 
 class Tools:
@@ -27,6 +28,7 @@ class Tools:
 
         # SystemBackend for OS operations (lazy-initialized if not provided)
         self._backend = backend
+        self.telemetry = get_telemetry()
 
     @property
     def backend(self) -> SystemBackend:
@@ -62,11 +64,14 @@ class Tools:
         """
         Lists files in the specified directory (relative to workspace).
         """
+        self.telemetry.tool_start("File System", f"list_files {directory}")
         safe, abs_path = self._is_safe_path(directory)
         if not safe:
+            self.telemetry.tool_end("File System", "Access denied", success=False)
             return "Error: Access denied. Path is outside workspace."
             
         result = self.backend.list_dir(abs_path)
+        self.telemetry.tool_end("File System", result.output if result.success else result.error, success=result.success)
         if result.success:
             return result.output
         return f"Error listing files: {result.error}"
@@ -75,11 +80,14 @@ class Tools:
         """
         Reads content of a text file (relative to workspace).
         """
+        self.telemetry.tool_start("File System", f"read_file {filepath}")
         safe, abs_path = self._is_safe_path(filepath)
         if not safe:
+            self.telemetry.tool_end("File System", "Access denied", success=False)
             return "Error: Access denied. Path is outside workspace."
 
         result = self.backend.read_file(abs_path)
+        self.telemetry.tool_end("File System", f"Read {len(result.output)} chars" if result.success else result.error, success=result.success)
         if result.success:
             return result.output
         return f"Error reading file: {result.error}"
@@ -88,11 +96,14 @@ class Tools:
         """
         Writes content to a file (relative to workspace). Overwrites if exists.
         """
+        self.telemetry.tool_start("File System", f"write_file {filepath}")
         safe, abs_path = self._is_safe_path(filepath)
         if not safe:
+            self.telemetry.tool_end("File System", "Access denied", success=False)
             return "Error: Access denied. Path is outside workspace."
 
         result = self.backend.write_file(abs_path, content)
+        self.telemetry.tool_end("File System", "Success" if result.success else result.error, success=result.success)
         if result.success:
             return f"File '{filepath}' written successfully."
         return f"Error writing file: {result.error}"

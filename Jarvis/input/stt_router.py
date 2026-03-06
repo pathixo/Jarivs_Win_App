@@ -523,18 +523,18 @@ class STTRouter:
         """
         lang = language or self._language
 
-        # 1. Try Groq (Fastest cloud)
-        if self._groq and self._should_use_groq():
-            result = self._groq.transcribe_bytes(audio_bytes, sample_rate, channels, sample_width, lang)
+        # 1. Try Local Faster-Whisper (Primary - unlimited usage)
+        if self._local:
+            result = self._local.transcribe_bytes(audio_bytes, sample_rate, channels, sample_width, lang)
             if result.get("error") is None:
-                self._groq_calls += 1
-                result["provider"] = "groq"
+                self._local_calls += 1
+                result["provider"] = "local"
                 return result
             else:
-                self._groq_errors += 1
-                logger.warning("GroqSTT failed, falling back to next provider")
+                self._local_errors += 1
+                logger.warning("Local STT failed, falling back to Gemini")
 
-        # 2. Try Gemini (Robust cloud)
+        # 2. Try Gemini (Cloud fallback)
         if self._gemini and self._should_use_gemini():
             result = self._gemini.transcribe_bytes(audio_bytes, sample_rate, channels, sample_width, lang)
             if result.get("error") is None:
@@ -543,14 +543,7 @@ class STTRouter:
                 return result
             else:
                 self._gemini_errors += 1
-                logger.warning("GeminiSTT failed, falling back to local")
-
-        # 3. Fallback to local
-        if self._local:
-            result = self._local.transcribe_bytes(audio_bytes, sample_rate, channels, sample_width, lang)
-            self._local_calls += 1
-            result["provider"] = "local"
-            return result
+                logger.warning("GeminiSTT failed, no fallback available")
 
         return {
             "text": "",

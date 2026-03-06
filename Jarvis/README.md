@@ -114,6 +114,34 @@ The `Brain` class:
 4. Register the backend in `Brain.__init__()._backends`
 5. Add the default model to `Brain._default_model_for()`
 
+
+---
+
+## STT Provider Architecture
+
+### Speech-to-Text (STT) Providers
+
+Jarvis supports multiple STT backends with intelligent fallback:
+
+| Provider | Type | Latency | Cost | Accuracy |
+|---|---|---|---|---|
+| **Faster-Whisper (Local)** | Local | 500ms-1s (CPU) / 100-200ms (GPU) | Free | High |
+| **Groq Whisper API** | Cloud | ~200ms + network | Free (8hr/day limit) | Very High |
+| **Gemini 1.5 Flash** | Cloud | ~300ms | Paid (via API key) | High |
+
+**Configuration** (via `.env`):
+```env
+STT_PROVIDER=local              # "local" (primary) | "groq" | "gemini" | "auto"
+STT_MODEL_SIZE=small.en         # Faster-Whisper model: "tiny", "small.en", "base.en", "small"
+```
+
+**Default Behavior** (`STT_PROVIDER=local`):
+1. Uses **Faster-Whisper locally** (unlimited, offline, GPU-accelerated if available)
+2. Falls back to **Gemini 1.5 Flash** if local fails (requires `GEMINI_API_KEY`)
+3. Falls back to **Groq Whisper API** is removed from primary path (requires `GROQ_API_KEY`)
+
+**Code Location**: `input/stt_router.py` (608 lines, provider routing + stats tracking)
+
 ---
 
 ## Signal Flow (Qt)

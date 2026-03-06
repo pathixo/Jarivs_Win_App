@@ -1,42 +1,61 @@
 """
-Terminal Window Module
-=======================
-Separate PyQt6 window for displaying Jarvis command execution and output.
-Refined world-class aesthetic matching the new dashboard.
+Terminal & Telemetry Window Module
+==================================
+Official "Agent Telemetry & Thought Log" for Swara-Core.
+Provides real-time visibility into the agent's processing pipeline, 
+chain-of-thought reasoning, and tool execution.
 """
 
 import sys
 from datetime import datetime
 from collections import deque
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QTextEdit, QLabel, QFrame, QApplication)
+                             QTextEdit, QLabel, QFrame, QApplication, QScrollArea)
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QColor, QTextCursor, QTextCharFormat, QFontDatabase
 
 from Jarvis.ui import design_tokens as dt
-from Jarvis.ui.terminal_branding import (
-    get_startup_header, get_ready_message, get_divider, 
-    create_command_block, create_output_block, get_jarvis_banner,
-    colorize_text, StatusColor, Colors
-)
+from Jarvis.core.terminal_bridge import get_terminal_bridge
+
+
+class PipelineStep(QLabel):
+    """A single visual step in the agent pipeline."""
+    def __init__(self, text, parent=None):
+        super().__init__(text.upper(), parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedHeight(24)
+        self.setFixedWidth(100)
+        self.setFont(QFont(dt.FONT_FAMILY, 7, QFont.Weight.Black))
+        self.set_state("idle")
+
+    def set_state(self, state):
+        if state == "active":
+            self.setStyleSheet(f"""
+                background: {dt.ACCENT}; color: {dt.TEXT_ON_ACCENT};
+                border-radius: 12px; border: 1px solid {dt.ACCENT_HOVER};
+            """)
+        elif state == "completed":
+            self.setStyleSheet(f"""
+                background: {dt.SUCCESS_BG}; color: {dt.SUCCESS};
+                border-radius: 12px; border: 1px solid {dt.SUCCESS}33;
+            """)
+        else: # idle
+            self.setStyleSheet(f"""
+                background: transparent; color: {dt.TEXT_MUTED};
+                border-radius: 12px; border: 1px solid {dt.BORDER_DEFAULT};
+            """)
 
 
 class TerminalWindow(QMainWindow):
     """
-    Separate terminal window displaying command execution and output.
-    Refined world-class aesthetic.
+    Industry-grade Telemetry & Thought Log.
+    Provides deep transparency into Agent operations.
     """
-    
-    command_executed = pyqtSignal(str, str)
-    status_changed = pyqtSignal(str, str)
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Jarvis Terminal")
-        self.resize(1000, 700)
-        
-        self.command_history = deque(maxlen=500)
-        self.display_count = 0
+        self.setWindowTitle("Jarvis Telemetry & Thought Log")
+        self.resize(1100, 750)
         
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -46,184 +65,193 @@ class TerminalWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
-        # ─── Header Frame ───────────────────────────────────────────────
+        # ─── 1. Header & Pipeline Tracker ─────────────────────────────────────
         self.header = QFrame()
-        self.header.setFixedHeight(64)
-        self.header.setStyleSheet(f"""
-            QFrame {{
-                background: rgba(2, 6, 23, 0.8);
-                border-bottom: 1px solid {dt.BORDER_DEFAULT};
-            }}
-        """)
-        header_layout = QHBoxLayout(self.header)
-        header_layout.setContentsMargins(20, 0, 20, 0)
+        self.header.setFixedHeight(80)
+        self.header.setStyleSheet(f"background: {dt.BG_SURFACE}; border-bottom: 1px solid {dt.BORDER_DEFAULT};")
+        header_layout = QVBoxLayout(self.header)
+        header_layout.setContentsMargins(20, 10, 20, 10)
         
-        # Title/Logo
-        self.title_label = QLabel("󰆍  JARVIS TERMINAL")
-        self.title_label.setFont(QFont(dt.FONT_FAMILY, 11, QFont.Weight.Black))
-        self.title_label.setStyleSheet(f"color: {dt.TEXT_PRIMARY}; letter-spacing: 2px; border: none;")
-        header_layout.addWidget(self.title_label)
+        top_h = QHBoxLayout()
+        title = QLabel("󰆍  AGENT TELEMETRY")
+        title.setFont(QFont(dt.FONT_FAMILY, 10, QFont.Weight.Black))
+        title.setStyleSheet(f"color: {dt.ACCENT}; letter-spacing: 2px;")
+        top_h.addWidget(title)
+        top_h.addStretch()
         
-        header_layout.addStretch()
+        self.status_label = QLabel("● SYSTEM READY")
+        self.status_label.setFont(QFont(dt.FONT_FAMILY, 8, QFont.Weight.Bold))
+        self.status_label.setStyleSheet(f"color: {dt.SUCCESS};")
+        top_h.addWidget(self.status_label)
+        header_layout.addLayout(top_h)
         
-        # Status bar
-        self.status_label = QLabel("●  SYSTEM READY")
-        self.status_label.setFont(QFont(dt.FONT_FAMILY, 9, QFont.Weight.Bold))
-        self.status_label.setStyleSheet(f"color: {dt.SUCCESS}; border: none;")
-        header_layout.addWidget(self.status_label)
+        # Pipeline visualizer
+        self.pipeline_layout = QHBoxLayout()
+        self.pipeline_layout.setSpacing(8)
+        self.steps = {
+            "LISTENING":    PipelineStep("Listening"),
+            "TRANSCRIBING": PipelineStep("Transcribing"),
+            "ROUTING":      PipelineStep("Routing"),
+            "THINKING":     PipelineStep("Thinking"),
+            "EXECUTING":    PipelineStep("Executing"),
+            "SPEAKING":     PipelineStep("Speaking"),
+        }
+        for step in self.steps.values():
+            self.pipeline_layout.addWidget(step)
+        header_layout.addLayout(self.pipeline_layout)
         
         main_layout.addWidget(self.header)
         
-        # ─── Output Display Area ────────────────────────────────────────
-        self.output_display = QTextEdit()
-        self.output_display.setReadOnly(True)
-        self.output_display.setStyleSheet(f"""
+        # ─── 2. Main Telemetry Log (The Feed) ─────────────────────────────────
+        self.log_display = QTextEdit()
+        self.log_display.setReadOnly(True)
+        self.log_display.setStyleSheet(f"""
             QTextEdit {{
                 background: {dt.BG_BASE};
                 color: {dt.TEXT_SECONDARY};
                 border: none;
                 padding: 24px;
-                line-height: 1.6;
-            }}
-            QTextEdit::vertical-scrollbar {{
-                background: transparent;
-                width: 8px;
-            }}
-            QTextEdit::vertical-scrollbar:handle {{
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 4px;
+                line-height: 1.5;
             }}
         """)
+        self.log_display.setFont(QFont(dt.FONT_FAMILY_MONO, 10))
+        main_layout.addWidget(self.log_display)
         
-        # Use monospace font for terminal
-        font = QFont()
-        font.setFamily(dt.FONT_FAMILY_MONO)
-        font.setPointSize(10)
-        self.output_display.setFont(font)
-        
-        main_layout.addWidget(self.output_display, 1)
-        
-        # ─── Info Footer ────────────────────────────────────────────────
+        # ─── 3. Footer Stats ──────────────────────────────────────────────────
         self.footer = QFrame()
-        self.footer.setFixedHeight(36)
-        self.footer.setStyleSheet(f"""
-            QFrame {{
-                background: rgba(2, 6, 23, 0.8);
-                border-top: 1px solid {dt.BORDER_DEFAULT};
-            }}
-        """)
+        self.footer.setFixedHeight(32)
+        self.footer.setStyleSheet(f"background: {dt.BG_SURFACE}; border-top: 1px solid {dt.BORDER_DEFAULT};")
         footer_layout = QHBoxLayout(self.footer)
         footer_layout.setContentsMargins(20, 0, 20, 0)
         
-        self.command_count_label = QLabel("COMMANDS: 0")
-        self.command_count_label.setFont(QFont(dt.FONT_FAMILY, 8, QFont.Weight.Bold))
-        self.command_count_label.setStyleSheet(f"color: {dt.TEXT_MUTED}; letter-spacing: 1px;")
-        footer_layout.addWidget(self.command_count_label)
-        
+        self.stats_label = QLabel("ENGINE: LOCAL (OLLAMA)  |  LLM: QWEN 2.5")
+        self.stats_label.setFont(QFont(dt.FONT_FAMILY_MONO, 7))
+        self.stats_label.setStyleSheet(f"color: {dt.TEXT_MUTED};")
+        footer_layout.addWidget(self.stats_label)
         footer_layout.addStretch()
         
-        self.info_label = QLabel("IDLE")
-        self.info_label.setFont(QFont(dt.FONT_FAMILY, 8, QFont.Weight.Bold))
-        self.info_label.setStyleSheet(f"color: {dt.ACCENT}; letter-spacing: 1px;")
-        footer_layout.addWidget(self.info_label)
+        self.latency_label = QLabel("LATENCY: 0ms")
+        self.latency_label.setFont(QFont(dt.FONT_FAMILY_MONO, 7))
+        self.latency_label.setStyleSheet(f"color: {dt.TEXT_MUTED};")
+        footer_layout.addWidget(self.latency_label)
         
         main_layout.addWidget(self.footer)
         
-        # ─── Display initial header ─────────────────────────────────────
+        # Wire signals
+        self.bridge = get_terminal_bridge()
+        self.bridge.telemetry_event.connect(self.handle_telemetry_event)
+        self.bridge.status_update.connect(self.update_status)
+        
         self._init_display()
-    
+
     def _init_display(self):
-        """Initialize the terminal display with header."""
-        self.output_display.clear()
-        self._append_text("JARVIS CORE v2.2 - SECURE COMMAND INTERFACE\n", color=dt.ACCENT, bold=True)
-        self._append_text("Session initialized. All systems nominal.\n", color=dt.TEXT_MUTED)
-        self._append_text("─" * 60 + "\n\n", color=dt.BORDER_DEFAULT)
-    
-    def append_command(self, command_text, timestamp=None):
-        if timestamp is None:
-            timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_display.clear()
+        self._append_log("TELEMETRY", "Session Initialized. Awaiting command...", color=dt.TEXT_MUTED)
+        self._append_log("SYSTEM", "Pipeline health check: NOMINAL", color=dt.SUCCESS)
+        self._append_divider()
+
+    def handle_telemetry_event(self, phase, message, event_type, provider, model, timestamp):
+        """Slot for the industry-grade telemetry signal."""
+        # 1. Update Pipeline Visuals
+        self._update_pipeline_visuals(phase)
         
-        self.display_count += 1
+        # 2. Update Footer Stats if model/provider is sent
+        if provider or model:
+            self.stats_label.setText(f"PROVIDER: {provider.upper()} | MODEL: {model.upper()}")
         
-        self._append_text(f"[{timestamp}] ", color=dt.TEXT_MUTED)
-        self._append_text("󰅩  EXEC  ", color=dt.INFO, bold=True)
-        self._append_text(f"{command_text}\n", color=dt.TEXT_PRIMARY)
+        # 3. Format and Append Log
+        time_str = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S.%f")[:-3]
+        color = self._get_color_for_type(event_type)
         
-        self.command_history.append({'command': command_text, 'timestamp': timestamp})
-        self.command_count_label.setText(f"COMMANDS: {self.display_count}")
-        self._scroll_to_bottom()
-    
-    def append_output(self, output_text, is_error=False):
-        if not output_text:
-            return
+        self._append_log(phase, message, color, time_str, event_type)
+
+    def _update_pipeline_visuals(self, active_phase):
+        found_active = False
+        for phase_name, step in self.steps.items():
+            if phase_name == active_phase:
+                step.set_state("active")
+                found_active = True
+            elif not found_active and active_phase != "IDLE":
+                step.set_state("completed")
+            else:
+                step.set_state("idle")
         
-        color = dt.ERROR if is_error else dt.TEXT_SECONDARY
-        prefix = "󰅚  ERROR " if is_error else "󰄬  INFO  "
-        
-        self._append_text(f"      {prefix}", color=color, bold=True)
-        
-        # Indent output lines
-        first = True
-        for line in output_text.split('\n'):
-            if not first:
-                self._append_text("              ", color=color)
-            self._append_text(f"{line}\n", color=color)
-            first = False
-        
-        self._append_text("\n", color=color)
-        self._scroll_to_bottom()
-    
-    def update_status(self, status_text, status_type="normal"):
-        status_colors = {
-            "listening": dt.SUCCESS,
-            "processing": dt.WARNING,
-            "error": dt.ERROR,
-            "normal": dt.SUCCESS
-        }
-        
-        color = status_colors.get(status_type, dt.SUCCESS)
-        icons = {
-            "listening": "󰍬",
-            "processing": "󰚩",
-            "error": "󰅚",
-            "normal": "●"
-        }
-        icon = icons.get(status_type, "●")
-        
-        self.status_label.setText(f"{icon}  {status_text.upper()}")
-        self.status_label.setStyleSheet(f"color: {color}; border: none;")
-        self.info_label.setText(status_type.upper())
-    
-    def _append_text(self, text, color=None, bold=False):
-        cursor = self.output_display.textCursor()
+        if active_phase == "IDLE":
+            for step in self.steps.values(): step.set_state("idle")
+
+    def _get_color_for_type(self, event_type):
+        return {
+            "SUCCESS": dt.SUCCESS,
+            "WARNING": dt.WARNING,
+            "ERROR":   dt.ERROR,
+            "THOUGHT": "#A78BFA", # Soft Purple/Violet for CoT
+            "TOOL":    "#38BDF8", # Sky Blue for Tool/Exec
+            "INFO":    dt.TEXT_SECONDARY
+        }.get(event_type, dt.TEXT_SECONDARY)
+
+    def _append_log(self, phase, message, color, time_str=None, event_type=None):
+        if not time_str:
+            time_str = datetime.now().strftime("%H:%M:%S")
+            
+        cursor = self.log_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         
+        # Timestamp
         fmt = QTextCharFormat()
-        if color:
-            fmt.setForeground(QColor(color))
-        if bold:
-            fmt.setFontWeight(700)
-        
+        fmt.setForeground(QColor(dt.TEXT_MUTED))
         cursor.setCharFormat(fmt)
-        cursor.insertText(text)
-        self.output_display.setTextCursor(cursor)
-    
-    def _scroll_to_bottom(self):
-        cursor = self.output_display.textCursor()
+        cursor.insertText(f"[{time_str}] ")
+        
+        # Phase Tag
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        fmt.setFontWeight(QFont.Weight.Bold)
+        cursor.setCharFormat(fmt)
+        cursor.insertText(f"{phase.ljust(12)} ")
+        
+        # Icon based on type
+        icon = {
+            "SUCCESS": "✓ ", "ERROR": "✗ ", "WARNING": "⚠ ", 
+            "THOUGHT": "🧠 ", "TOOL": "⚙ ", "INFO": "• "
+        }.get(event_type, "• ")
+        cursor.insertText(icon)
+        
+        # Message
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(dt.TEXT_PRIMARY if event_type in ["THOUGHT", "TOOL"] else color))
+        fmt.setFontWeight(QFont.Weight.Normal)
+        cursor.setCharFormat(fmt)
+        
+        # Indent multi-line messages
+        lines = message.split('\n')
+        cursor.insertText(lines[0] + "\n")
+        if len(lines) > 1:
+            for line in lines[1:]:
+                cursor.insertText(" " * 24 + line + "\n")
+        
+        self.log_display.setTextCursor(cursor)
+        self.log_display.ensureCursorVisible()
+
+    def _append_divider(self):
+        cursor = self.log_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.output_display.setTextCursor(cursor)
-    
-    def clear_output(self):
-        self.output_display.clear()
-        self.display_count = 0
-        self.command_history.clear()
-        self._init_display()
-        self.command_count_label.setText("COMMANDS: 0")
-    
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(dt.BORDER_DEFAULT))
+        cursor.setCharFormat(fmt)
+        cursor.insertText("─" * 80 + "\n")
+        self.log_display.setTextCursor(cursor)
+
+    def update_status(self, text, status_type):
+        color = dt.SUCCESS if status_type == "listening" else dt.ACCENT if status_type == "processing" else dt.ERROR
+        self.status_label.setText(f"● {text.upper()}")
+        self.status_label.setStyleSheet(f"color: {color};")
+
     def closeEvent(self, event):
         event.ignore()
         self.hide()
 
-
-def create_terminal_window():
-    return TerminalWindow()
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = TerminalWindow()
+    window.show()
+    sys.exit(app.exec())

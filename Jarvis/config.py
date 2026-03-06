@@ -78,11 +78,12 @@ TTS_VOICE = "en-IE-EmilyNeural"
 DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", "friday")
 
 # ─────────────────────── Pipeline Config ────────────────────────────────────
-# STT Provider: "auto" | "groq" | "local"
-#   auto  — Groq Whisper API (fastest, most accurate) with local fallback
-#   groq  — Always use Groq Whisper API
-#   local — Always use local faster-whisper
-STT_PROVIDER = os.getenv("STT_PROVIDER", "auto")
+# STT Provider: "auto" | "groq" | "gemini" | "local"
+#   local — Always use local faster-whisper (primary, unlimited usage)
+#   groq  — Always use Groq Whisper API (cloud, 8 hour/day limit)
+#   gemini — Always use Gemini 1.5 Flash
+#   auto  — Local with Gemini fallback
+STT_PROVIDER = os.getenv("STT_PROVIDER", "local")
 
 # TTS Engine: "auto" | "kokoro" | "edge"
 #   auto   — Kokoro (local GPU) with edge-tts fallback

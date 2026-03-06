@@ -50,82 +50,22 @@ class SettingsWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Jarvis Settings")
-        self.resize(1280, 800)
-        self.setMinimumSize(1024, 600)
+        self.resize(1100, 780)
+        self.setMinimumSize(960, 640)
         
-        # Frameless window matching main app
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-        # Center on screen
-        screen = self.screen().geometry()
-        self.move((screen.width() - self.width()) // 2, (screen.height() - self.height()) // 2)
+        # Standard window for official application feel
+        self.setStyleSheet(f"background-color: {dt.BG_BASE}; color: {dt.TEXT_PRIMARY};")
 
         self._init_ui()
-        self.old_pos = None
 
     def _init_ui(self):
         # ── Main Container ──
-        self.central_widget = QWidget()
-        self.central_widget.setStyleSheet(f"""
-            QWidget#MainContainer {{
-                background: {dt.BG_BASE};
-                border: 1px solid {dt.BORDER_DEFAULT};
-                border-radius: {dt.RADIUS_LG}px;
-            }}
-            QLabel {{
-                color: {dt.TEXT_PRIMARY};
-                font-family: '{dt.FONT_FAMILY}';
-            }}
-        """)
-        self.central_widget.setObjectName("MainContainer")
-        self.setCentralWidget(self.central_widget)
-
-        main_layout = QVBoxLayout(self.central_widget)
+        central = QWidget()
+        self.setCentralWidget(central)
+        
+        main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-
-        # ── Title Bar ──
-        self.title_bar = QFrame()
-        self.title_bar.setFixedHeight(dt.HEADER_HEIGHT)
-        self.title_bar.setStyleSheet(f"""
-            QFrame {{
-                background: {dt.BG_SURFACE};
-                border-bottom: 1px solid {dt.BORDER_DEFAULT};
-                border-top-left-radius: {dt.RADIUS_LG}px;
-                border-top-right-radius: {dt.RADIUS_LG}px;
-            }}
-        """)
-        title_layout = QHBoxLayout(self.title_bar)
-        title_layout.setContentsMargins(dt.SPACING_LG, 0, dt.SPACING_SM, 0)
-
-        title_label = QLabel("Jarvis ─ Settings")
-        title_label.setFont(QFont(dt.FONT_FAMILY, dt.FONT_SIZE_H3, QFont.Weight.Bold))
-        title_label.setStyleSheet("border: none; background: transparent;")
-
-        # Window Controls
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(30, 30)
-        close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                border: none;
-                color: {dt.TEXT_SECONDARY};
-                font-size: 14pt;
-                border-radius: 4px;
-            }}
-            QPushButton:hover {{
-                background: {dt.ERROR};
-                color: white;
-            }}
-        """)
-        close_btn.clicked.connect(self.hide)
-
-        title_layout.addWidget(title_label)
-        title_layout.addStretch()
-        title_layout.addWidget(close_btn)
-        main_layout.addWidget(self.title_bar)
 
         # ── Body (Sidebar + Stacked Widget) ──
         body_widget = QWidget()
@@ -140,27 +80,32 @@ class SettingsWindow(QMainWindow):
             QFrame {{
                 background: {dt.SIDEBAR_BG};
                 border-right: 1px solid {dt.BORDER_DEFAULT};
-                border-bottom-left-radius: {dt.RADIUS_LG}px;
             }}
         """)
         sidebar_layout = QVBoxLayout(self.sidebar)
-        sidebar_layout.setContentsMargins(dt.SPACING_SM, dt.SPACING_LG, dt.SPACING_SM, dt.SPACING_LG)
-        sidebar_layout.setSpacing(dt.SPACING_SM)
+        sidebar_layout.setContentsMargins(16, 24, 16, 24)
+        sidebar_layout.setSpacing(4)
+        
+        # Branding in Settings
+        brand = QLabel("SETTINGS")
+        brand.setFont(QFont(dt.FONT_FAMILY, 10, QFont.Weight.Black))
+        brand.setStyleSheet(f"color: {dt.TEXT_MUTED}; letter-spacing: 2px; margin-bottom: 20px; padding-left: 10px;")
+        sidebar_layout.addWidget(brand)
 
         # Content Stack
         self.stack = QStackedWidget()
-        self.stack.setStyleSheet(f"background: {dt.BG_BASE}; border-bottom-right-radius: {dt.RADIUS_LG}px;")
+        self.stack.setStyleSheet(f"background: {dt.BG_BASE};")
 
         # Pages
         self.pages = {}
         self.nav_buttons = {}
 
         nav_items = [
-            ("Home", self._build_home_page()),
-            ("API Management", self._build_api_page()),
+            ("Overview", self._build_home_page()),
+            ("Security", self._build_api_page()),
             ("Models", self._build_models_page()),
-            ("Settings", self._build_settings_page()),
-            ("History", self._build_history_page())
+            ("System", self._build_settings_page()),
+            ("Logs", self._build_history_page())
         ]
 
         for i, (name, widget) in enumerate(nav_items):
@@ -177,8 +122,9 @@ class SettingsWindow(QMainWindow):
         sidebar_layout.addStretch()
         
         # Version Label
-        version_label = QLabel("v1.2.0 (Local)")
-        version_label.setStyleSheet(f"color: {dt.TEXT_MUTED}; font-size: {dt.FONT_SIZE_CAPTION}pt; padding: 4px;")
+        version_label = QLabel("v2.5.0-STABLE")
+        version_label.setStyleSheet(f"color: {dt.TEXT_MUTED}; font-size: 8pt; font-family: '{dt.FONT_FAMILY_MONO}';")
+        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sidebar_layout.addWidget(version_label)
 
         body_layout.addWidget(self.sidebar)
@@ -187,8 +133,8 @@ class SettingsWindow(QMainWindow):
         main_layout.addWidget(body_widget)
 
         # Default page
-        if "Home" in self.nav_buttons:
-            self._switch_page(0, self.nav_buttons["Home"])
+        if "Overview" in self.nav_buttons:
+            self._switch_page(0, self.nav_buttons["Overview"])
 
     def _switch_page(self, index, active_btn):
         for btn in self.nav_buttons.values():

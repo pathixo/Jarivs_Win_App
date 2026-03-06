@@ -12,6 +12,7 @@ from Jarvis.input.vad import create_vad
 from Jarvis.input.stt_router import STTRouter
 from Jarvis.input.audio_processor import AudioProcessor
 from Jarvis.core.language_detector import LanguageDetector
+from Jarvis.core.telemetry import get_telemetry, AgentPhase, TelemetryType
 
 # Porcupine wake word detection (optional - graceful fallback if not available)
 try:
@@ -20,6 +21,8 @@ try:
 except ImportError:
     pvporcupine = None
     PORCUPINE_AVAILABLE = False
+
+telemetry = get_telemetry()
     
 
 class Listener(QObject):
@@ -206,6 +209,7 @@ class Listener(QObject):
     def _transcribe(self, frames):
         """Transcribe audio frames using STT Router (in-memory, no file I/O)."""
         t_start = time.time()
+        telemetry.emit(AgentPhase.TRANSCRIBING, "Starting speech-to-text conversion...", provider=STT_PROVIDER)
         
         # Combine all frames into a single byte buffer
         audio_bytes = b''.join(frames)
@@ -241,6 +245,7 @@ class Listener(QObject):
         detected_lang = result.get("language", "auto")
 
         if error:
+            telemetry.emit(AgentPhase.ERROR, f"Transcription failed: {error}", type=TelemetryType.ERROR, provider=provider)
             print(f"[STT] Error ({provider}): {error}")
             return
 
@@ -248,6 +253,7 @@ class Listener(QObject):
         if detected_lang and detected_lang != "auto":
             self._last_detected_language = detected_lang
 
+        telemetry.emit(AgentPhase.TRANSCRIBING, f"Transcribed: \"{text}\"", type=TelemetryType.SUCCESS, provider=provider)
         print(f"[STT] '{text}' ({provider}, stt={stt_time}s, total={total:.2f}s, lang={detected_lang})")
 
         if text and len(text) > 2:
@@ -327,6 +333,7 @@ class Listener(QObject):
                         continue
 
                     if is_speech:
+                        telemetry.emit(AgentPhase.LISTENING, "Speech detected, capturing audio...")
                         self.state_changed.emit("listening")
                         frames = self._record_until_silence(data)
                         if frames:
@@ -335,6 +342,7 @@ class Listener(QObject):
                             self.state_changed.emit("processing")
                             self._transcribe(frames)
                         self.state_changed.emit("waiting")
+                        telemetry.emit(AgentPhase.IDLE, "Pipeline reset to IDLE.")
                         # Reset VAD state after each utterance
                         self._vad.reset()
 

@@ -27,6 +27,9 @@ class TerminalBridge(QObject):
     # Signal: (status_text, status_type)  status_type in [listening, processing, error, normal]
     status_update = pyqtSignal(str, str)
     
+    # Signal: (phase_name, message, type_name, provider, model, timestamp)
+    telemetry_event = pyqtSignal(str, str, str, str, str, float)
+    
     # Signal: (timestamp, command, output)
     command_executed = pyqtSignal(str, str, str)
     
