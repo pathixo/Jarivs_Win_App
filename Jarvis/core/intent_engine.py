@@ -34,10 +34,23 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
+import time, httpx
 
 logger = logging.getLogger("jarvis.intent_engine")
 
-
+def post_with_retry(url, payload, headers, max_attempts=3):
+    client = httpx.Client(timeout=httpx.Timeout(5.0, connect=3.0))
+    for attempt in range(1, max_attempts+1):
+        try:
+            resp = client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            if attempt == max_attempts:
+                raise  # agar max attempts ho gaye toh error throw karo
+            sleep_time = 2 ** attempt  # exponential backoff (2s, 4s, 8s)
+            print(f"Retrying in {sleep_time} seconds... (Attempt {attempt})")
+            time.sleep(sleep_time)
 # ─────────────────────── Intent Result ──────────────────────────────────────
 
 INTENT_CATEGORIES = [
@@ -285,7 +298,7 @@ class IntentEngine:
 
         # Use a short, dedicated client for intention analysis
         client = httpx.Client(timeout=httpx.Timeout(5.0, connect=3.0))
-        resp = client.post(self.GROQ_URL, json=payload, headers=self._headers)
+        resp = post_with_retry(self.GROQ_URL, payload, self._headers)
         resp.raise_for_status()
 
         raw = resp.json()["choices"][0]["message"]["content"]
