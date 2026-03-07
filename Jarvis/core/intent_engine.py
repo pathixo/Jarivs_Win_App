@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 logger = logging.getLogger("jarvis.intent_engine")
 
@@ -263,10 +264,18 @@ class IntentEngine:
         return future
 
     # ── Internal ──────────────────────────────────────────────────────────
+    # ── Internal ──────────────────────────────────────────────────────────
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(httpx.RequestError),
+    )
     def _call_groq(self, query: str, history: list[dict]) -> IntentResult:
-        """Call Groq API and parse the structured JSON response."""
+        """Call Groq API and parse the structured JSON response with retry logic."""
+
         history_summary = self._summarize_history(history)
+
         user_prompt = _USER_PROMPT_TEMPLATE.format(
             query=query,
             history_summary=history_summary,
@@ -278,55 +287,24 @@ class IntentEngine:
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.1,   # Near-zero: we want deterministic classification
+            "temperature": 0.1,
             "max_tokens": 300,
             "response_format": {"type": "json_object"},
         }
 
-        # Use a short, dedicated client for intention analysis
-        client = httpx.Client(timeout=httpx.Timeout(5.0, connect=3.0))
-        resp = client.post(self.GROQ_URL, json=payload, headers=self._headers)
-        resp.raise_for_status()
+        logger.warning("Calling Groq API (with retry protection)...")
+
+        with httpx.Client(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+            resp = client.post(self.GROQ_URL, json=payload, headers=self._headers)
+
+            if resp.status_code >= 500 or resp.status_code == 429:
+                logger.warning(f"Groq temporary error {resp.status_code}, retrying...")
+                resp.raise_for_status()
+
+            resp.raise_for_status()
 
         raw = resp.json()["choices"][0]["message"]["content"]
         data = json.loads(raw)
+
         return self._parse(data)
-
-    def _parse(self, data: dict) -> IntentResult:
-        """Parse raw JSON dict into an IntentResult."""
-        category = data.get("category", "conversation")
-        if category not in INTENT_CATEGORIES:
-            category = "conversation"
-
-        return IntentResult(
-            category=category,
-            action=data.get("action", ""),
-            entities=data.get("entities", {}),
-            confidence=float(data.get("confidence", 1.0)),
-            is_ambiguous=bool(data.get("is_ambiguous", False)),
-            ambiguity_note=data.get("ambiguity_note", ""),
-            rewritten_query=data.get("rewritten_query", ""),
-            reasoning=data.get("reasoning", ""),
-        )
-
-    @staticmethod
-    def _summarize_history(history: list[dict]) -> str:
-        """Build a short 2-turn history summary for the intent prompt."""
-        if not history:
-            return "(no prior context)"
-        tail = history[-4:]  # last 2 turns (user + assistant × 2)
-        lines = []
-        for msg in tail:
-            role = msg.get("role", "?")
-            content = msg.get("content", "")[:100]
-            lines.append(f"  {role}: {content}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _passthrough(query: str) -> IntentResult:
-        """Fallback when engine is disabled or fails — neutral, high-confidence result."""
-        return IntentResult(
-            category="conversation",
-            confidence=1.0,
-            rewritten_query=query,
-        )
+    
